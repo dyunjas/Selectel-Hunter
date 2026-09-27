@@ -26,7 +26,10 @@ class SelectelClient:
         try:
             async with self.session.post(url, **request_kwargs) as response:
                 payload = await response.json(content_type=None)
-                if response.status >= 400: raise SelectelError(ErrorClassifier.classify(response.status, payload), "Authentication failed", status=response.status)
+                if response.status >= 400:
+                    neutron = payload.get("NeutronError", {}) if isinstance(payload, dict) else {}
+                    reason = neutron.get("message") or payload.get("error", {}).get("message") or "Authentication failed"
+                    raise SelectelError(ErrorClassifier.classify(response.status, payload), reason, status=response.status)
                 self.token = response.headers.get("X-Subject-Token") or payload.get("token", {}).get("id")
                 if not self.token: raise SelectelError(ErrorType.AUTH_ERROR, "Authentication token missing")
                 return self.token
@@ -44,7 +47,12 @@ class SelectelClient:
                     payload = await response.json(content_type=None)
                     if response.status == 401 and attempt == 0: self.token = None; await self.authenticate(); continue
                     if response.status >= 400:
-                        retry = response.headers.get("Retry-After"); raise SelectelError(ErrorClassifier.classify(response.status, payload), "Selectel API request failed", float(retry) if retry else None, response.status)
+                        retry = response.headers.get("Retry-After")
+                        neutron = payload.get("NeutronError", {}) if isinstance(payload, dict) else {}
+                        reason = neutron.get("message") or payload.get("error", {}).get("message") or "Selectel API request failed"
+                        error_type = neutron.get("type")
+                        if error_type: reason = f"{error_type}: {reason}"
+                        raise SelectelError(ErrorClassifier.classify(response.status, payload), reason, float(retry) if retry else None, response.status)
                     return payload
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                 raise SelectelError(ErrorType.NETWORK_ERROR, "Selectel API network error") from exc

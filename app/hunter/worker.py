@@ -24,7 +24,8 @@ class HunterWorker:
                         result = await self.client.create_floating_ip(current.subnet_id)
                     except SelectelError as exc:
                         await self.repo.update_task(current.id, last_error=exc.kind.value)
-                        try: await self.notify(current, None, None, 0, exc.kind.value)
+                        event_text = f"{exc.kind.value}: {exc}"
+                        try: await self.notify(current, None, None, 0, event_text)
                         except Exception: log.exception("notification failed", extra={"task_id": current.id})
                         # Любая ошибка запроса является временной для watcher-а.
                         # Даже 401/403/unknown не переводим в ERROR: credentials или
