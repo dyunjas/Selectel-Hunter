@@ -1,0 +1,1 @@
+"""Selectel Floating IP Hunter."""

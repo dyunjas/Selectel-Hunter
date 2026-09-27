@@ -1,0 +1,16 @@
+[Unit]
+Description=Selectel Floating IP Hunter Telegram Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/selectel-ip-hunter
+EnvironmentFile=/opt/selectel-ip-hunter/.env
+ExecStart=/opt/selectel-ip-hunter/venv/bin/python -m app.main
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
