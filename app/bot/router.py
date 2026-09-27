@@ -5,7 +5,9 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 from app.config.subnets import BY_ID, TARGET_SUBNETS
-from .keyboards import account_actions, accounts, back_menu, delete_confirmation, hunt_accounts, main_menu, notification_settings, subnets, task_actions, task_list_keyboard
+from .keyboards import account_actions, accounts, back, delete_confirmation, hunt_accounts, main_menu, notification_settings, subnets, task_actions, task_list as task_list_keyboard
+
+back_menu = back
 
 log = logging.getLogger(__name__)
 
@@ -32,13 +34,19 @@ def build_router(repo, manager, secret_box, client_factory, admin_ids=None, bot=
     chosen_account = {}; chosen_subnet = {}
 
     @router.message(CommandStart())
-    async def start(message): await message.answer("📊 Selectel IP Hunter\nВыберите действие:", reply_markup=main_menu())
+    async def start(message): await message.answer("📊 <b>Selectel IP Hunter</b>\n\nАвтоматический поиск свободных Floating IP.\nВыберите раздел:", reply_markup=main_menu())
+    @router.message(Command("help"))
+    async def help_command(message): await message.answer("ℹ️ <b>Как пользоваться</b>\n\n1. Добавьте Selectel-аккаунт.\n2. Выберите аккаунт и одну целевую подсеть.\n3. Запустите поиск.\n4. Управляйте задачей в разделе «📋 Задачи».\n\nОшибки сети и отсутствие свободных IP не останавливают поиск — бот повторит попытку автоматически.", reply_markup=back())
+    @router.message(Command("cancel"))
+    async def cancel(message, state): await state.clear(); await message.answer("↩️ Текущее действие отменено.", reply_markup=main_menu())
     @router.message(Command("status"))
     async def status(message):
         tasks = await repo.user_tasks(message.from_user.id)
         await message.answer(f"📊 Статус\nАккаунтов: {len(await repo.accounts(message.from_user.id))}\nАктивных: {sum(t.status == 'RUNNING' for t in tasks)}\nНа паузе: {sum(t.status == 'PAUSED' for t in tasks)}\nНайдено: {sum(t.status == 'FOUND' for t in tasks)}\nОшибок: {sum(t.status == 'ERROR' for t in tasks)}", reply_markup=back_menu())
     @router.callback_query(F.data == "home")
-    async def home(call, state: FSMContext): await state.clear(); await call.message.edit_text("📊 Главное меню\nВыберите действие:", reply_markup=main_menu()); await call.answer()
+    async def home(call, state: FSMContext): await state.clear(); await call.message.edit_text("📊 <b>Главное меню</b>\n\nВыберите раздел:", reply_markup=main_menu()); await call.answer()
+    @router.callback_query(F.data == "help")
+    async def help_screen(call): await call.message.edit_text("ℹ️ <b>Помощь</b>\n\n<b>Новый поиск</b> — выбрать аккаунт и одну подсеть.\n<b>Задачи</b> — посмотреть попытки, поставить на паузу или остановить.\n<b>Аккаунты</b> — изменить proxy, задержки и уведомления.\n\nКоманды: /start, /status, /help, /cancel", reply_markup=back()); await call.answer()
 
     @router.callback_query(F.data == "account:add")
     async def account_add(call, state): await state.set_state(AddAccount.name); await call.message.edit_text("➕ Добавление аккаунта\n\nШаг 1 из 9\nВведите понятное название:", reply_markup=back_menu()); await call.answer()
@@ -93,6 +101,11 @@ def build_router(repo, manager, secret_box, client_factory, admin_ids=None, bot=
         if not account or account.telegram_user_id != call.from_user.id: await call.answer("Аккаунт не найден", show_alert=True); return
         nets = await repo.enabled_subnets(account.id); tasks = [t for t in await repo.user_tasks(call.from_user.id) if t.account_id == account.id and t.status == "RUNNING"]
         await call.message.edit_text(f"👤 {account.display_name}\n\nProxy: {'✅ включён' if account.encrypted_proxy_url else '❌ нет'}\nЗадержка: {account.min_interval}–{account.max_interval} сек.\nПодсеть: {nets[0].cidr if nets else 'не выбрана'}\nАктивных задач: {len(tasks)}", reply_markup=account_actions(account.id, bool(account.topic_thread_id))); await call.answer()
+    @router.callback_query(F.data.startswith("account:hunt:"))
+    async def account_hunt(call):
+        account_id = int(call.data.rsplit(":", 1)[1]); account = await repo.get_account(account_id)
+        if not account or account.telegram_user_id != call.from_user.id: await call.answer("Аккаунт не найден", show_alert=True); return
+        chosen_account[call.from_user.id] = account_id; chosen_subnet[call.from_user.id] = set(); await call.message.edit_text(f"🎯 <b>Новый поиск</b>\n\nАккаунт: <b>{account.display_name}</b>\nВыберите одну подсеть:", reply_markup=subnets(TARGET_SUBNETS, set())); await call.answer()
     @router.callback_query(F.data.startswith("account:notifications:"))
     async def account_notifications(call):
         account = await repo.get_account(int(call.data.rsplit(":", 1)[1]))
@@ -173,6 +186,12 @@ def build_router(repo, manager, secret_box, client_factory, admin_ids=None, bot=
     @router.callback_query(F.data.startswith("hunt:account:"))
     async def hunt_account(call):
         chosen_account[call.from_user.id] = int(call.data.rsplit(":", 1)[1]); chosen_subnet[call.from_user.id] = set(); await call.message.edit_text("🎯 Запуск поиска\n\nВыберите одну подсеть для этого аккаунта:", reply_markup=subnets(TARGET_SUBNETS, set())); await call.answer()
+    @router.callback_query(F.data == "hunt:back")
+    async def hunt_back(call):
+        account = await repo.get_account(chosen_account.get(call.from_user.id, 0))
+        if account: await call.message.edit_text(f"👤 {account.display_name}", reply_markup=account_actions(account.id, bool(account.topic_thread_id)))
+        else: await call.message.edit_text("Выберите аккаунт:", reply_markup=hunt_accounts(await repo.accounts(call.from_user.id)))
+        await call.answer()
     @router.callback_query(F.data.startswith("subnet:toggle:"))
     async def subnet_toggle(call):
         subnet_id = call.data.rsplit(":", 1)[1]; chosen_subnet[call.from_user.id] = {subnet_id}; await call.message.edit_reply_markup(reply_markup=subnets(TARGET_SUBNETS, {subnet_id})); await call.answer("Подсеть выбрана")

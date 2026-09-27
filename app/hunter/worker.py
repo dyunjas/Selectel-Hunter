@@ -19,16 +19,19 @@ class HunterWorker:
                     current = await self.repo.get_task(self.task.id)
                     if not current or current.status != TaskStatus.RUNNING.value: return
                     await self.repo.update_task(current.id, attempts=current.attempts + 1, last_attempt_at=datetime.now(timezone.utc).replace(tzinfo=None))
+                    current.attempts += 1
                     try:
                         result = await self.client.create_floating_ip(current.subnet_id)
                     except SelectelError as exc:
                         await self.repo.update_task(current.id, last_error=exc.kind.value)
                         try: await self.notify(current, None, None, 0, exc.kind.value)
                         except Exception: log.exception("notification failed", extra={"task_id": current.id})
-                        if exc.kind in (ErrorType.NO_FREE_IP, ErrorType.RATE_LIMIT, ErrorType.NETWORK_ERROR, ErrorType.SERVER_ERROR):
-                            delay = exc.retry_after or random.uniform(current.min_interval, current.max_interval)
-                            await asyncio.sleep(max(3, min(delay, 300))); continue
-                        await self.repo.update_task(current.id, status=TaskStatus.ERROR.value, finished_at=datetime.now(timezone.utc).replace(tzinfo=None)); return
+                        # Любая ошибка запроса является временной для watcher-а.
+                        # Даже 401/403/unknown не переводим в ERROR: credentials или
+                        # права могут быть исправлены без пересоздания задачи.
+                        backoff = min(300, 2 ** min(current.attempts, 8))
+                        delay = exc.retry_after or max(random.uniform(current.min_interval, current.max_interval), backoff)
+                        await asyncio.sleep(max(3, min(delay, 300))); continue
                     ip = result.get("floating_ip_address"); fip_id = result.get("id")
                     elapsed = time.monotonic() - started
                     await self.repo.update_task(current.id, status=TaskStatus.FOUND.value, floating_ip_address=ip, floating_ip_id=fip_id, elapsed_seconds=elapsed, finished_at=datetime.now(timezone.utc).replace(tzinfo=None), last_error=None)

@@ -16,9 +16,10 @@ def found_message(account, task, ip, fip_id, elapsed):
 
 
 def error_message(account, task, event):
+    follow_up = "Поиск продолжается автоматически. После исправления причины следующая попытка выполнится сама."
     return ("<b>⚠️ Ошибка запроса IP</b>\n\n"
             f"<blockquote><b>Аккаунт:</b> {safe(account.display_name if account else task.account_id)}\n"
             f"<b>Подсеть:</b> <code>{safe(task.subnet_cidr)}</code>\n"
             f"<b>Тип:</b> <code>{safe(event)}</code></blockquote>\n"
             f"Попытка: <b>{task.attempts}</b>\n\n"
-            "<i>Поиск продолжается автоматически.</i>")
+            f"<i>{follow_up}</i>")
