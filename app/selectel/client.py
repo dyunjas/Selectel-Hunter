@@ -1,6 +1,7 @@
 import asyncio, logging
 from typing import Any
 import aiohttp
+from aiohttp_socks import ProxyConnector
 from .errors import ErrorClassifier, ErrorType, SelectelError
 
 log = logging.getLogger(__name__)
@@ -10,9 +11,12 @@ class SelectelClient:
     def __init__(self, account, password: str, default_network_id: str, proxy: str | None = None):
         self.account, self.password, self.network_id, self.proxy = account, password, default_network_id, proxy
         self.session: aiohttp.ClientSession | None = None; self.token: str | None = None
+        self.socks_proxy = bool(proxy and proxy.lower().startswith(("socks4://", "socks4a://", "socks5://", "socks5h://")))
 
     async def open(self):
-        if self.session is None: self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30, connect=10))
+        if self.session is None:
+            connector = ProxyConnector.from_url(self.proxy) if self.socks_proxy else None
+            self.session = aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=30, connect=10))
 
     async def close(self):
         if self.session: await self.session.close(); self.session = None
@@ -22,7 +26,7 @@ class SelectelClient:
         url = self.account.auth_url or f"https://cloud.api.selcloud.ru/identity/v3/auth/tokens"
         body = {"auth": {"identity": {"methods": ["password"], "password": {"user": {"name": self.account.username, "domain": {"name": self.account.domain}, "password": self.password}}}, "scope": {"project": {"id": self.account.project_id}}}}
         request_kwargs = {"json": body}
-        if self.proxy: request_kwargs["proxy"] = self.proxy
+        if self.proxy and not self.socks_proxy: request_kwargs["proxy"] = self.proxy
         try:
             async with self.session.post(url, **request_kwargs) as response:
                 payload = await response.json(content_type=None)
@@ -41,7 +45,7 @@ class SelectelClient:
         if not self.token: await self.authenticate()
         headers = {"X-Auth-Token": self.token, "Content-Type": "application/json"}
         for attempt in range(2):
-            if self.proxy: kwargs["proxy"] = self.proxy
+            if self.proxy and not self.socks_proxy: kwargs["proxy"] = self.proxy
             try:
                 async with self.session.request(method, f"{self.account.network_api_url.rstrip('/')}/{path.lstrip('/')}", headers=headers, **kwargs) as response:
                     payload = await response.json(content_type=None)

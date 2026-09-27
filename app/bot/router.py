@@ -174,6 +174,7 @@ def build_router(repo, manager, secret_box, client_factory, admin_ids=None, bot=
         await state.update_data(min_interval=message.text); await state.set_state(EditAccount.max_interval); await message.answer("Новый максимум задержки или `-`:")
     @router.message(EditAccount.max_interval)
     async def edit_max(message, state):
+        await state.update_data(max_interval=message.text)
         data = await state.get_data(); account = await repo.get_account(data["account_id"]); values = {}
         fields = {"display_name": data["name"], "domain": data["domain"], "username": data["username"], "project_id": data["project"], "project_name": data["project"], "region": data["region"]}
         for field, value in fields.items():
