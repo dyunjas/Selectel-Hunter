@@ -34,7 +34,7 @@ def build_router(repo, manager, secret_box, client_factory, admin_ids=None, bot=
     chosen_account = {}; chosen_subnet = {}
 
     @router.message(CommandStart())
-    async def start(message): await message.answer("📊 <b>Selectel IP Hunter</b>\n\nАвтоматический поиск свободных Floating IP.\nВыберите раздел:", reply_markup=main_menu())
+    async def start(message): await message.answer("<b>🚀 SELECTEL IP HUNTER</b>\n\nАвтоматический поиск свободных Floating IP.\n\n<i>Выберите действие ниже:</i>", reply_markup=main_menu())
     @router.message(Command("help"))
     async def help_command(message): await message.answer("ℹ️ <b>Как пользоваться</b>\n\n1. Добавьте Selectel-аккаунт.\n2. Выберите аккаунт и одну целевую подсеть.\n3. Запустите поиск.\n4. Управляйте задачей в разделе «📋 Задачи».\n\nОшибки сети и отсутствие свободных IP не останавливают поиск — бот повторит попытку автоматически.", reply_markup=back())
     @router.message(Command("cancel"))
@@ -42,11 +42,11 @@ def build_router(repo, manager, secret_box, client_factory, admin_ids=None, bot=
     @router.message(Command("status"))
     async def status(message):
         tasks = await repo.user_tasks(message.from_user.id)
-        await message.answer(f"📊 Статус\nАккаунтов: {len(await repo.accounts(message.from_user.id))}\nАктивных: {sum(t.status == 'RUNNING' for t in tasks)}\nНа паузе: {sum(t.status == 'PAUSED' for t in tasks)}\nНайдено: {sum(t.status == 'FOUND' for t in tasks)}\nОшибок: {sum(t.status == 'ERROR' for t in tasks)}", reply_markup=back_menu())
+        await message.answer(f"<b>📊 СТАТУС СИСТЕМЫ</b>\n\n👤 Аккаунтов: <b>{len(await repo.accounts(message.from_user.id))}</b>\n🔄 Активных задач: <b>{sum(t.status == 'RUNNING' for t in tasks)}</b>\n⏸ На паузе: <b>{sum(t.status == 'PAUSED' for t in tasks)}</b>\n✅ Найдено IP: <b>{sum(t.status == 'FOUND' for t in tasks)}</b>\n⚠️ Ошибок: <b>{sum(t.status == 'ERROR' for t in tasks)}</b>", reply_markup=back_menu())
     @router.callback_query(F.data == "home")
-    async def home(call, state: FSMContext): await state.clear(); await call.message.edit_text("📊 <b>Главное меню</b>\n\nВыберите раздел:", reply_markup=main_menu()); await call.answer()
+    async def home(call, state: FSMContext): await state.clear(); await call.message.edit_text("<b>🚀 SELECTEL IP HUNTER</b>\n\nГлавное меню. Выберите раздел:", reply_markup=main_menu()); await call.answer()
     @router.callback_query(F.data == "help")
-    async def help_screen(call): await call.message.edit_text("ℹ️ <b>Помощь</b>\n\n<b>Новый поиск</b> — выбрать аккаунт и одну подсеть.\n<b>Задачи</b> — посмотреть попытки, поставить на паузу или остановить.\n<b>Аккаунты</b> — изменить proxy, задержки и уведомления.\n\nКоманды: /start, /status, /help, /cancel", reply_markup=back()); await call.answer()
+    async def help_screen(call): await call.message.edit_text("<b>ℹ️ КАК ЭТО РАБОТАЕТ</b>\n\n<b>1. Аккаунт</b>\nДобавьте Selectel credentials и настройки подключения.\n\n<b>2. Поиск</b>\nВыберите аккаунт и одну целевую подсеть.\n\n<b>3. Watcher</b>\nБот повторяет запросы с вашим интервалом и не останавливается из-за временных ошибок.\n\n<b>4. Результат</b>\nНайденный IP отправляется в topic аккаунта.\n\nКоманды: /start · /status · /help · /cancel", reply_markup=back()); await call.answer()
 
     @router.callback_query(F.data == "account:add")
     async def account_add(call, state): await state.set_state(AddAccount.name); await call.message.edit_text("➕ Добавление аккаунта\n\nШаг 1 из 9\nВведите понятное название:", reply_markup=back_menu()); await call.answer()
@@ -139,7 +139,17 @@ def build_router(repo, manager, secret_box, client_factory, admin_ids=None, bot=
     async def account_delete_yes(call):
         account_id = int(call.data.rsplit(":", 1)[1]); account = await repo.get_account(account_id)
         if not account or account.telegram_user_id != call.from_user.id: await call.answer("Аккаунт не найден", show_alert=True); return
-        await manager.stop_account(account_id); await repo.delete_account(account_id); await call.message.edit_text(f"✅ Аккаунт «{account.display_name}» удалён.", reply_markup=main_menu()); await call.answer()
+        await manager.stop_account(account_id)
+        topic_deleted = False
+        if bot and account.topic_chat_id and account.topic_thread_id:
+            try:
+                await bot.delete_forum_topic(chat_id=account.topic_chat_id, message_thread_id=account.topic_thread_id)
+                topic_deleted = True
+            except Exception as exc:
+                log.warning("topic could not be deleted", extra={"account_id": account_id, "error": str(exc)})
+        await repo.delete_account(account_id)
+        suffix = " Topic удалён." if topic_deleted else " Topic не найден или уже удалён."
+        await call.message.edit_text(f"✅ Аккаунт «{account.display_name}» удалён.{suffix}", reply_markup=main_menu()); await call.answer()
     @router.callback_query(F.data.startswith("account:edit:"))
     async def account_edit(call, state):
         account_id = int(call.data.rsplit(":", 1)[1]); account = await repo.get_account(account_id)

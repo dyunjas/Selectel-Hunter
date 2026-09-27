@@ -45,7 +45,12 @@ class SelectelClient:
             try:
                 async with self.session.request(method, f"{self.account.network_api_url.rstrip('/')}/{path.lstrip('/')}", headers=headers, **kwargs) as response:
                     payload = await response.json(content_type=None)
-                    if response.status == 401 and attempt == 0: self.token = None; await self.authenticate(); continue
+                    if response.status in (401, 403) and attempt == 0:
+                        # После изменения IAM-ролей старый Keystone token может
+                        # продолжать жить, поэтому один раз перевыпускаем его.
+                        self.token = None
+                        await self.authenticate()
+                        continue
                     if response.status >= 400:
                         retry = response.headers.get("Retry-After")
                         neutron = payload.get("NeutronError", {}) if isinstance(payload, dict) else {}

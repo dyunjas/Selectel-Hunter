@@ -30,8 +30,16 @@ class HunterWorker:
                         # Любая ошибка запроса является временной для watcher-а.
                         # Даже 401/403/unknown не переводим в ERROR: credentials или
                         # права могут быть исправлены без пересоздания задачи.
-                        backoff = min(300, 2 ** min(current.attempts, 8))
-                        delay = exc.retry_after or max(random.uniform(current.min_interval, current.max_interval), backoff)
+                        configured_delay = random.uniform(current.min_interval, current.max_interval)
+                        if exc.retry_after:
+                            delay = exc.retry_after
+                        elif exc.kind in (ErrorType.NETWORK_ERROR, ErrorType.SERVER_ERROR, ErrorType.RATE_LIMIT):
+                            delay = max(configured_delay, min(60, 2 ** min(current.attempts, 6)))
+                        else:
+                            # NO_FREE_IP, AUTH_ERROR и PERMISSION_ERROR не
+                            # увеличивают задержку: используем настройки аккаунта.
+                            delay = configured_delay
+                        log.warning("retry scheduled", extra={"task_id": current.id, "attempt": current.attempts, "error": exc.kind.value, "delay_seconds": round(delay, 1)})
                         await asyncio.sleep(max(3, min(delay, 300))); continue
                     ip = result.get("floating_ip_address"); fip_id = result.get("id")
                     elapsed = time.monotonic() - started
