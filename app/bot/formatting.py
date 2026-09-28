@@ -16,13 +16,16 @@ def found_message(account, task, ip, fip_id, elapsed):
 
 
 def error_message(account, task, event):
-    error_kind = str(event).split(":", 1)[0]
+    raw_event = str(event)
+    error_kind, _, detail = raw_event.partition(":")
+    error_kind = error_kind.strip()
+    detail = detail.strip() or "Подробности не переданы"
     if error_kind == "NO_FREE_IP":
         title = "<b>ℹ️ Свободных IP пока нет</b>"
         reason = "В выбранной подсети сейчас нет доступных адресов."
     else:
         title = "<b>⚠️ Ошибка запроса IP</b>"
-        reason = f"Тип: <code>{safe(error_kind)}</code>"
+        reason = f"Тип: <code>{safe(error_kind)}</code>\n<b>Подробности:</b> <code>{safe(detail[:700])}</code>"
     follow_up = "Поиск продолжается с обычным интервалом аккаунта."
     return (title + "\n\n"
             f"<blockquote><b>Аккаунт:</b> {safe(account.display_name if account else task.account_id)}\n"

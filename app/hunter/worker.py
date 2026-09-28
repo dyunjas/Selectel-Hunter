@@ -50,7 +50,10 @@ class HunterWorker:
                     return
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as exc:
+            error = f"UNKNOWN: {type(exc).__name__}: {str(exc)[:500]}"
             log.exception("worker iteration failed", extra={"task_id": self.task.id})
             await self.repo.update_task(self.task.id, last_error="UNKNOWN")
+            try: await self.notify(self.task, None, None, 0, error)
+            except Exception: log.exception("unknown-error notification failed", extra={"task_id": self.task.id})
             await asyncio.sleep(10)
