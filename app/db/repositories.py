@@ -30,7 +30,7 @@ class Repository:
             await s.execute(update(Account).where(Account.id == account_id).values(**values)); await s.commit()
 
     async def toggle_account_notification(self, account_id: int, field: str):
-        allowed = {"notify_account_added", "notify_errors", "notify_found"}
+        allowed = {"notify_account_added", "notify_found", "notify_no_free_ip", "notify_permission", "notify_network", "notify_rate_limit", "notify_server", "notify_unknown"}
         if field not in allowed: raise ValueError("Unknown notification setting")
         async with self.sessions() as s:
             account = await s.get(Account, account_id)

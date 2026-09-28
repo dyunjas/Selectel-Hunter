@@ -42,10 +42,10 @@ async def main():
 
     async def notify(task, ip, fip_id, elapsed, event):
         account = await repo.get_account(task.account_id)
-        if account and event == "FOUND" and not account.notify_found:
-            return
-        if account and event != "FOUND" and not account.notify_errors:
-            return
+        if account:
+            kind = "FOUND" if event == "FOUND" else str(event).split(":", 1)[0]
+            preference = {"FOUND": "notify_found", "NO_FREE_IP": "notify_no_free_ip", "PERMISSION_ERROR": "notify_permission", "NETWORK_ERROR": "notify_network", "RATE_LIMIT": "notify_rate_limit", "SERVER_ERROR": "notify_server", "AUTH_ERROR": "notify_permission", "UNKNOWN": "notify_unknown"}.get(kind, "notify_unknown")
+            if not getattr(account, preference, True): return
         chat_id = account.topic_chat_id if account and account.topic_chat_id else task.telegram_user_id
         thread_id = account.topic_thread_id if account and account.topic_thread_id else None
         text = found_message(account, task, ip, fip_id, elapsed) if event == "FOUND" else error_message(account, task, event)

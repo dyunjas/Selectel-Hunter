@@ -20,10 +20,10 @@ class TaskManager:
             task = await self.repo.get_task(task_id)
             if task and task.status == TaskStatus.RUNNING.value:
                 await asyncio.sleep(2)
-                log.warning("recovering unexpectedly finished task", extra={"task_id": task_id})
+                log.warning("recovering unexpectedly finished task_id=%s", task_id)
                 await self.start_task(task)
         except Exception:
-            log.exception("task recovery failed", extra={"task_id": task_id})
+            log.exception("task recovery failed task_id=%s", task_id)
 
     async def start_pair(self, user_id, account, subnet, network_id, min_interval=None, max_interval=None):
         min_interval = account.min_interval if min_interval is None else min_interval

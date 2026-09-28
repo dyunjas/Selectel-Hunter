@@ -9,6 +9,8 @@ class AdminOnlyMiddleware(BaseMiddleware):
     def __init__(self, admin_ids): self.admin_ids = admin_ids
     async def __call__(self, handler, event, data):
         user = getattr(event, "from_user", None)
+        if user and user.is_bot: return None
+        if isinstance(event, CallbackQuery) and event.message and event.message.chat.type != "private": return None
         if user and user.id in self.admin_ids: return await handler(event, data)
         if isinstance(event, CallbackQuery): await event.answer("⛔ Нет доступа", show_alert=True)
         elif isinstance(event, Message): await event.answer("⛔ Нет доступа")

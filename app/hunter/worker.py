@@ -39,7 +39,10 @@ class HunterWorker:
                             # NO_FREE_IP, AUTH_ERROR и PERMISSION_ERROR не
                             # увеличивают задержку: используем настройки аккаунта.
                             delay = configured_delay
-                        log.warning("retry scheduled", extra={"task_id": current.id, "attempt": current.attempts, "error": exc.kind.value, "delay_seconds": round(delay, 1)})
+                        log.warning(
+                            "retry scheduled task_id=%s attempt=%s error=%s detail=%s delay_seconds=%.1f",
+                            current.id, current.attempts, exc.kind.value, str(exc)[:300], delay,
+                        )
                         await asyncio.sleep(max(3, min(delay, 300))); continue
                     ip = result.get("floating_ip_address"); fip_id = result.get("id")
                     elapsed = time.monotonic() - started

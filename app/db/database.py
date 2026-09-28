@@ -23,6 +23,12 @@ class Database:
                     "notify_account_added": "INTEGER NOT NULL DEFAULT 1",
                     "notify_errors": "INTEGER NOT NULL DEFAULT 1",
                     "notify_found": "INTEGER NOT NULL DEFAULT 1",
+                    "notify_no_free_ip": "INTEGER NOT NULL DEFAULT 1",
+                    "notify_permission": "INTEGER NOT NULL DEFAULT 1",
+                    "notify_network": "INTEGER NOT NULL DEFAULT 1",
+                    "notify_rate_limit": "INTEGER NOT NULL DEFAULT 1",
+                    "notify_server": "INTEGER NOT NULL DEFAULT 1",
+                    "notify_unknown": "INTEGER NOT NULL DEFAULT 1",
                 }
                 existing = await conn.execute(text("PRAGMA table_info(accounts)"))
                 names = {row[1] for row in existing.fetchall()}
