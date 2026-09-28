@@ -15,7 +15,14 @@ class ErrorClassifier:
     def classify(status: int, payload: dict) -> ErrorType:
         error = payload.get("NeutronError", {}) if isinstance(payload, dict) else {}
         text = f"{error.get('type', '')} {error.get('message', '')}".lower()
-        if status == 409 or any(x in text for x in ("ipaddressgenerationfailure", "no more ip addresses", "no ip addresses available", "address generation failure")): return ErrorType.NO_FREE_IP
+        if status == 409 or any(x in text for x in (
+            "ipaddressgenerationfailure",
+            "externalipaddressexhausted",
+            "no more ip addresses",
+            "no ip addresses available",
+            "unable to find any ip address",
+            "address generation failure",
+        )): return ErrorType.NO_FREE_IP
         if status == 401: return ErrorType.AUTH_ERROR
         if status == 403: return ErrorType.PERMISSION_ERROR
         if status == 429: return ErrorType.RATE_LIMIT
