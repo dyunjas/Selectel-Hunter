@@ -5,11 +5,13 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
 from app.bot import build_router
+from app.bot.multisubnet import build_multisubnet_router
 from app.bot.formatting import error_message, found_message
 from app.config import settings
 from app.db.database import Database
 from app.db.repositories import Repository
 from app.hunter.manager import TaskManager
+from app.config.subnets import TARGET_SUBNETS
 from app.selectel.client import SelectelClient
 from app.services.crypto import SecretBox
 from app.services.logger import configure_logging
@@ -52,9 +54,11 @@ async def main():
     manager = TaskManager(repo, client_factory, notify)
     bot = Bot(settings.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dispatcher = Dispatcher()
+    dispatcher.include_router(build_multisubnet_router(repo, manager, set(settings.admin_ids)))
     dispatcher.include_router(build_router(repo, manager, box, client_factory, set(settings.admin_ids), bot, settings.notification_chat_id))
     await manager.restore_tasks()
     for account in await repo.all_accounts():
+        await repo.set_subnets(account.id, TARGET_SUBNETS)
         if account.auto_start:
             for subnet in await repo.enabled_subnets(account.id):
                 await manager.start_pair(account.telegram_user_id, account, subnet, settings.floating_network_id)

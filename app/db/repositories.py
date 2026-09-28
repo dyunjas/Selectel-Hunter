@@ -45,8 +45,6 @@ class Repository:
             await s.execute(delete(Account).where(Account.id == account_id)); await s.commit()
 
     async def set_subnets(self, account_id: int, selected: list[dict]):
-        if len(selected) > 1:
-            raise ValueError("Для одного аккаунта можно выбрать только одну подсеть")
         async with self.sessions() as s:
             await s.execute(update(AccountSubnet).where(AccountSubnet.account_id == account_id).values(enabled=False))
             for item in selected:

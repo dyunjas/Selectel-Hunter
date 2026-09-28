@@ -40,7 +40,7 @@ def hunt_accounts(items):
 
 def subnets(items, selected):
     rows = [[InlineKeyboardButton(text=("✅ " if x["subnet_id"] in selected else "⬜ ") + x["cidr"], callback_data=f"subnet:toggle:{x['subnet_id']}")] for x in items]
-    rows += [[InlineKeyboardButton(text="✖️  Сбросить выбор", callback_data="subnet:none")], [InlineKeyboardButton(text="🚀  Запустить поиск", callback_data="subnet:save")], [InlineKeyboardButton(text="🔙  Назад", callback_data="hunt:back")]]
+    rows += [[InlineKeyboardButton(text="✅  Выбрать все", callback_data="subnet:all"), InlineKeyboardButton(text="✖️  Сбросить", callback_data="subnet:none")], [InlineKeyboardButton(text="🚀  Запустить поиск по выбранным", callback_data="subnet:save")], [InlineKeyboardButton(text="🔙  Назад", callback_data="hunt:back")]]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
