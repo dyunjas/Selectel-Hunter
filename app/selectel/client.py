@@ -69,7 +69,10 @@ class SelectelClient:
     async def validate_account(self): return await self._request("GET", "floatingip_pools")
 
     async def create_floating_ip(self, subnet_id: str):
-        return (await self._request("POST", "floatingips", json={"floatingip": {"floating_network_id": self.network_id, "subnet_id": subnet_id}})).get("floatingip", {})
+        try:
+            return (await self._request("POST", "floatingips", json={"floatingip": {"floating_network_id": self.network_id, "subnet_id": subnet_id}})).get("floatingip", {})
+        except SelectelError as exc:
+            raise SelectelError(exc.kind, f"{exc}; floating_network_id={self.network_id}; subnet_id={subnet_id}", exc.retry_after, exc.status) from exc
 
     async def get_floating_ips(self): return await self._request("GET", "floatingips")
     async def get_floatingip_pools(self): return await self._request("GET", "floatingip_pools")
