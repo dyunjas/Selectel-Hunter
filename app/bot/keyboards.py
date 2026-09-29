@@ -1,4 +1,5 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from app.config.regions import SUPPORTED_REGIONS
 
 
 def main_menu():
@@ -7,6 +8,13 @@ def main_menu():
         [InlineKeyboardButton(text="👤 Аккаунты", callback_data="account:list"), InlineKeyboardButton(text="🎯 Новый поиск", callback_data="hunt:start")],
         [InlineKeyboardButton(text="📋 Задачи", callback_data="task:list"), InlineKeyboardButton(text="✅ Результаты", callback_data="found:list")],
         [InlineKeyboardButton(text="ℹ️ Помощь", callback_data="help")],
+    ])
+
+
+def region_picker(prefix="region"):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"🌐 {region}", callback_data=f"{prefix}:{region}") for region in SUPPORTED_REGIONS],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="home")],
     ])
 
 

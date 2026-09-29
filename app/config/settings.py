@@ -13,9 +13,9 @@ class Settings(BaseSettings):
     default_region: str = "ru-3"
     default_network_api: str = "https://ru-3.cloud.api.selcloud.ru/network/v2.0"
     floating_network_id: str = "966826e6-d301-4bb5-aa13-77a324d15f0d"
-    default_min_interval: int = 5
-    default_max_interval: int = 10
-    min_allowed_interval: int = 3
+    default_min_interval: int = 30
+    default_max_interval: int = 60
+    min_allowed_interval: int = 30
     notification_chat_id: int = Field(0, alias="NOTIFICATION_CHAT_ID")
 
     @field_validator("admin_ids", mode="before")

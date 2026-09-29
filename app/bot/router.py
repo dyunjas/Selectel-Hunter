@@ -5,7 +5,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 from app.config.subnets import BY_ID, TARGET_SUBNETS
-from .keyboards import account_actions, accounts, back, delete_confirmation, hunt_accounts, main_menu, notification_settings, subnets, task_actions, task_list as task_list_keyboard
+from app.config.regions import REGIONS
+from .keyboards import account_actions, accounts, back, delete_confirmation, hunt_accounts, main_menu, notification_settings, region_picker, subnets, task_actions, task_list as task_list_keyboard
 
 back_menu = back
 
@@ -51,6 +52,12 @@ def build_router(repo, manager, secret_box, client_factory, admin_ids=None, bot=
     async def help_screen(call): await call.message.edit_text("<b>ℹ️ КАК ЭТО РАБОТАЕТ</b>\n\n<b>1. Аккаунт</b>\nДобавьте Selectel credentials и настройки подключения.\n\n<b>2. Поиск</b>\nВыберите аккаунт и одну целевую подсеть.\n\n<b>3. Watcher</b>\nБот повторяет запросы с вашим интервалом и не останавливается из-за временных ошибок.\n\n<b>4. Результат</b>\nНайденный IP отправляется в topic аккаунта.\n\nКоманды: /start · /status · /help · /cancel", reply_markup=back()); await call.answer()
 
     @router.callback_query(F.data == "account:add")
+    async def account_add_region_prompt(call, state):
+        await state.set_state(AddAccount.name)
+        await call.message.edit_text("➕ Добавление аккаунта\n\nШаг 1 из 9\nВведите понятное название:", reply_markup=back_menu())
+        await call.answer()
+
+    @router.callback_query(F.data == "account:add:region")
     async def account_add(call, state): await state.set_state(AddAccount.name); await call.message.edit_text("➕ Добавление аккаунта\n\nШаг 1 из 9\nВведите понятное название:", reply_markup=back_menu()); await call.answer()
     @router.message(AddAccount.name)
     async def account_name(message, state): await state.update_data(name=message.text); await state.set_state(AddAccount.domain); await message.answer("Шаг 2 из 9\nВведите Account / Domain:")
@@ -65,12 +72,12 @@ def build_router(repo, manager, secret_box, client_factory, admin_ids=None, bot=
     @router.message(AddAccount.region)
     async def account_region(message, state): await state.update_data(region=message.text or "ru-3"); await state.set_state(AddAccount.proxy); await message.answer("Шаг 7 из 9\nВведите HTTP proxy или отправьте `-`, если proxy не нужен:")
     @router.message(AddAccount.proxy)
-    async def account_proxy(message, state): await state.update_data(proxy=None if message.text.strip() == "-" else message.text.strip()); await state.set_state(AddAccount.min_interval); await message.answer("Шаг 8 из 9\nМинимальная задержка между попытками, секунд (минимум 3):")
+    async def account_proxy(message, state): await state.update_data(proxy=None if message.text.strip() == "-" else message.text.strip()); await state.set_state(AddAccount.min_interval); await message.answer("Шаг 8 из 9\nМинимальная задержка между запросами, секунд (минимум 60):")
     @router.message(AddAccount.min_interval)
     async def account_min(message, state):
         try: value = max(3, int(message.text))
         except ValueError: await message.answer("Введите целое число, например 5:"); return
-        await state.update_data(min_interval=value); await state.set_state(AddAccount.max_interval); await message.answer("Шаг 9 из 9\nМаксимальная задержка, секунд:")
+        await state.update_data(min_interval=max(30, value)); await state.set_state(AddAccount.max_interval); await message.answer("Шаг 9 из 9\nМаксимальная задержка, секунд:")
     @router.message(AddAccount.max_interval)
     async def account_max(message, state):
         try: maximum = int(message.text)
@@ -185,8 +192,8 @@ def build_router(repo, manager, secret_box, client_factory, admin_ids=None, bot=
         if data["proxy"] == "none": values["encrypted_proxy_url"] = None
         elif data["proxy"] != "-": values["encrypted_proxy_url"] = secret_box.encrypt(data["proxy"])
         try:
-            if data["min_interval"] != "-": values["min_interval"] = max(3, int(data["min_interval"]))
-            if data["max_interval"] != "-": values["max_interval"] = max(values.get("min_interval", account.min_interval), int(data["max_interval"]))
+            if data["min_interval"] != "-": values["min_interval"] = max(30, int(data["min_interval"]))
+            if data["max_interval"] != "-": values["max_interval"] = max(values.get("min_interval", max(30, account.min_interval)), int(data["max_interval"]))
         except ValueError: await message.answer("Интервалы должны быть целыми числами. Начните редактирование заново."); await state.clear(); return
         if "region" in values: values["network_api_url"] = f"https://{values['region']}.cloud.api.selcloud.ru/network/v2.0"
         await repo.update_account(account.id, **values); await state.clear(); await message.answer("✅ Данные аккаунта обновлены.", reply_markup=main_menu())
@@ -223,6 +230,15 @@ def build_router(repo, manager, secret_box, client_factory, admin_ids=None, bot=
         text = "📋 <b>Активные задачи</b>\n\n"
         text += "Выберите задачу, чтобы посмотреть детали или управлять ею:" if tasks else "Сейчас нет активных задач.\n\nЗапустите поиск через кнопку «🎯 Запустить поиск»."
         await call.message.edit_text(text, reply_markup=task_list_keyboard(tasks)); await call.answer()
+    @router.callback_query(F.data.startswith("scheduler:resume:"))
+    async def scheduler_resume(call):
+        account = await repo.get_account(int(call.data.rsplit(":", 1)[1]))
+        if not account or account.telegram_user_id != call.from_user.id:
+            await call.answer("Аккаунт не найден", show_alert=True)
+            return
+        await manager.resume_account(account.id)
+        await call.answer("Планировщик возобновлён")
+        await call.message.edit_text(f"▶️ <b>{account.display_name}</b> снова запущен.", reply_markup=main_menu())
     @router.callback_query(F.data.startswith("task:view:"))
     async def task_view(call):
         task = await manager.get_task(int(call.data.rsplit(":", 1)[1]))

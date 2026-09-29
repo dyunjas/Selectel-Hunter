@@ -1,6 +1,10 @@
 import asyncio, logging
 from app.db.models import TaskStatus
 from .worker import HunterWorker
+from .account_manager import AccountSchedulerManager
+
+# New code should use AccountSchedulerManager.  Keep TaskManager available for
+# older integrations while the database is migrated in place.
 
 log = logging.getLogger(__name__)
 
@@ -47,3 +51,7 @@ class TaskManager:
         for task_id in task_ids: await self.stop_task(task_id)
     async def get_task(self, task_id): return await self.repo.get_task(task_id)
     async def get_running_tasks(self): return await self.repo.running_tasks()
+
+
+LegacyTaskManager = TaskManager
+TaskManager = AccountSchedulerManager

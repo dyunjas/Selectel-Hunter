@@ -1,20 +1,28 @@
 import asyncio, logging
 from typing import Any
 import aiohttp
-from aiohttp_socks import ProxyConnector
+try:
+    from aiohttp_socks import ProxyConnector
+except ImportError:  # The dependency is optional until a SOCKS proxy is configured.
+    ProxyConnector = None
 from .errors import ErrorClassifier, ErrorType, SelectelError
 
 log = logging.getLogger(__name__)
 
 
 class SelectelClient:
-    def __init__(self, account, password: str, default_network_id: str, proxy: str | None = None):
-        self.account, self.password, self.network_id, self.proxy = account, password, default_network_id, proxy
+    def __init__(self, account, password: str, default_network_id: str | None = None, proxy: str | None = None, region: str | None = None, network_api_url: str | None = None, floating_network_id: str | None = None):
+        self.account, self.password, self.region = account, password, region or account.region
+        self.network_id = floating_network_id or default_network_id
+        self.network_api_url = network_api_url or account.network_api_url
+        self.proxy = proxy
         self.session: aiohttp.ClientSession | None = None; self.token: str | None = None
         self.socks_proxy = bool(proxy and proxy.lower().startswith(("socks4://", "socks4a://", "socks5://", "socks5h://")))
 
     async def open(self):
         if self.session is None:
+            if self.socks_proxy and ProxyConnector is None:
+                raise SelectelError(ErrorType.UNKNOWN, "SOCKS proxy support is not installed; run pip install aiohttp-socks")
             connector = ProxyConnector.from_url(self.proxy) if self.socks_proxy else None
             self.session = aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=30, connect=10))
 
@@ -47,9 +55,9 @@ class SelectelClient:
         for attempt in range(2):
             if self.proxy and not self.socks_proxy: kwargs["proxy"] = self.proxy
             try:
-                async with self.session.request(method, f"{self.account.network_api_url.rstrip('/')}/{path.lstrip('/')}", headers=headers, **kwargs) as response:
+                async with self.session.request(method, f"{self.network_api_url.rstrip('/')}/{path.lstrip('/')}", headers=headers, **kwargs) as response:
                     payload = await response.json(content_type=None)
-                    if response.status in (401, 403) and attempt == 0:
+                    if response.status == 401 and attempt == 0:
                         # После изменения IAM-ролей старый Keystone token может
                         # продолжать жить, поэтому один раз перевыпускаем его.
                         self.token = None

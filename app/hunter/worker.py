@@ -60,3 +60,7 @@ class HunterWorker:
             try: await self.notify(self.task, None, None, 0, error)
             except Exception: log.exception("unknown-error notification failed", extra={"task_id": self.task.id})
             await asyncio.sleep(10)
+
+
+# Public compatibility export for integrations that used the old module path.
+from .account_worker import AccountWorker
