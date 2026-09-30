@@ -108,15 +108,9 @@ class AccountBurstWorker:
             return "cooldown"
         if kind == ErrorType.NETWORK_ERROR.value:
             errors = int(account.consecutive_network_errors or 0) + 1
-            scheduler_settings = await self.repo.scheduler_settings()
-            limit = max(1, int(scheduler_settings.errors_before_disable or 30))
-            if errors >= limit:
-                await self._state(scheduler_status="ERROR", consecutive_network_errors=errors, next_cycle_at=None)
-                await self._recalculate()
-                await self._notify(account, subnet, f"NETWORK_ERROR: отключение после {errors} ошибок: {exc}")
-                return "stop"
             await self._state(consecutive_network_errors=errors)
             log.warning("network error account=%s cycle=%s count=%s", account.id, self.cycle_id, errors)
+            await self._notify(account, subnet, f"NETWORK_ERROR: попытка {errors}: {exc}")
             return "continue"
         await self._notify(account, subnet, f"{kind}: {exc}")
         return "continue"
