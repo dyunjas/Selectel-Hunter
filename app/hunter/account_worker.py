@@ -185,7 +185,13 @@ class AccountBurstWorker:
                 continue
             finished = utcnow()
             scheduler_settings = await self.repo.scheduler_settings()
-            next_cycle = cycle_started + timedelta(seconds=max(0, int(scheduler_settings.burst_cooldown or 360)))
+            # A manager recalculation may have assigned a new pool slot while
+            # this burst was running. Preserve that slot; otherwise continue
+            # with the account's normal full-pool period.
+            scheduled = await self.repo.get_account(self.account_id)
+            next_cycle = scheduled.next_cycle_at if scheduled and scheduled.next_cycle_at and scheduled.next_cycle_at > finished else (
+                cycle_started + timedelta(seconds=max(0, int(scheduler_settings.burst_cooldown or 360)))
+            )
             await self._state(last_cycle_finished_at=finished, next_cycle_at=next_cycle)
             log.info("account=%s cycle=%s finished next_cycle=%s", account.id, self.cycle_id, next_cycle.isoformat())
 
