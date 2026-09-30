@@ -28,7 +28,7 @@ def accounts(items):
 
 
 def account_actions(account_id, has_topic=False):
-    rows = [[InlineKeyboardButton(text="▶️ Запустить / цели", callback_data=f"account:hunt:{account_id}")], [InlineKeyboardButton(text="⏸ Пауза", callback_data=f"account:pause:{account_id}")], [InlineKeyboardButton(text="▶️ Возобновить", callback_data=f"account:resume:{account_id}")], [InlineKeyboardButton(text="✏️ Изменить", callback_data=f"account:edit:{account_id}")], [InlineKeyboardButton(text="🔔 Уведомления", callback_data=f"account:notifications:{account_id}")]]
+    rows = [[InlineKeyboardButton(text="▶️ Запустить / цели", callback_data=f"account:hunt:{account_id}")], [InlineKeyboardButton(text="⚙️ Настройки аккаунта", callback_data=f"account:settings:{account_id}")], [InlineKeyboardButton(text="⏸ Пауза", callback_data=f"account:pause:{account_id}")], [InlineKeyboardButton(text="▶️ Возобновить", callback_data=f"account:resume:{account_id}")], [InlineKeyboardButton(text="🔔 Уведомления", callback_data=f"account:notifications:{account_id}")]]
     if not has_topic:
         rows.append([InlineKeyboardButton(text="🧵 Создать topic", callback_data=f"account:topic:{account_id}")])
     rows += [[InlineKeyboardButton(text="🗑 Удалить", callback_data=f"account:delete:{account_id}")], [InlineKeyboardButton(text="🔙 К аккаунтам", callback_data="account:list")]]
@@ -75,3 +75,10 @@ def scheduler_settings(settings):
         [InlineKeyboardButton(text=f"👥 Auto stagger: {stagger} / active", callback_data="burst:noop")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="home")],
     ])
+
+
+def account_burst_settings(settings, account_id):
+    keyboard = scheduler_settings(settings).inline_keyboard[:-1]
+    keyboard.append([InlineKeyboardButton(text="🔔 Уведомления", callback_data=f"account:notifications:{account_id}")])
+    keyboard.append([InlineKeyboardButton(text="🔙 К аккаунту", callback_data=f"account:view:{account_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)

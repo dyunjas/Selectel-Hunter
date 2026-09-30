@@ -1,4 +1,5 @@
 import logging
+from types import SimpleNamespace
 from aiogram import BaseMiddleware, F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
@@ -77,12 +78,22 @@ def build_router(repo, manager, secret_box, client_factory, admin_ids=None, bot=
     @router.message(AddAccount.region)
     async def account_region(message, state): await state.update_data(region=message.text or "ru-3"); await state.set_state(AddAccount.proxy); await message.answer("Шаг 7 из 9\nВведите HTTP proxy или отправьте `-`, если proxy не нужен:")
     @router.message(AddAccount.proxy)
-    async def account_proxy(message, state): await state.update_data(proxy=None if message.text.strip() == "-" else message.text.strip()); await state.set_state(AddAccount.min_interval); await message.answer("Шаг 8 из 9\nМинимальная задержка между запросами, секунд (минимум 60):")
-    @router.message(AddAccount.min_interval)
-    async def account_min(message, state):
-        try: value = max(3, int(message.text))
-        except ValueError: await message.answer("Введите целое число, например 5:"); return
-        await state.update_data(min_interval=max(30, value)); await state.set_state(AddAccount.max_interval); await message.answer("Шаг 9 из 9\nМаксимальная задержка, секунд:")
+    async def account_proxy_burst_defaults(message, state):
+        """Finish account creation with the global burst defaults."""
+        await state.update_data(
+            proxy=None if message.text.strip() == "-" else message.text.strip(),
+            min_interval=30,
+            max_interval=60,
+        )
+        await account_max(
+            SimpleNamespace(
+                text="60",
+                from_user=message.from_user,
+                answer=message.answer,
+            ),
+            state,
+        )
+
     @router.message(AddAccount.max_interval)
     async def account_max(message, state):
         try: maximum = int(message.text)
@@ -98,12 +109,12 @@ def build_router(repo, manager, secret_box, client_factory, admin_ids=None, bot=
                 topic = await bot.create_forum_topic(chat_id=notification_chat_id, name=account.display_name)
                 await repo.update_account(account.id, topic_chat_id=notification_chat_id, topic_thread_id=topic.message_thread_id)
                 if account.notify_account_added:
-                    await bot.send_message(notification_chat_id, f"✅ Аккаунт добавлен\n{account.display_name}\nЗадержка: {account.min_interval}–{account.max_interval} сек.", message_thread_id=topic.message_thread_id)
+                    await bot.send_message(notification_chat_id, f"✅ Аккаунт добавлен\n{account.display_name}\nBurst-планировщик активирован.", message_thread_id=topic.message_thread_id)
                 topic_ok = True
             except Exception as exc:
                 topic_ok = False; log.exception("failed to create Telegram topic", extra={"account_id": account.id, "chat_id": notification_chat_id})
                 await message.answer(f"⚠️ Аккаунт сохранён, но topic не создан.\nПричина: {type(exc).__name__}: {exc}")
-        await state.clear(); await message.answer(f"✅ Аккаунт сохранён\n\nНазвание: {account.display_name}\nProxy: {'включён' if data.get('proxy') else 'не используется'}\nИнтервал: {account.min_interval}–{account.max_interval} сек.\nTopic: {'создан' if topic_ok else 'не настроен'}", reply_markup=main_menu())
+        await state.clear(); await message.answer(f"✅ Аккаунт сохранён\n\nНазвание: {account.display_name}\nProxy: {'включён' if data.get('proxy') else 'не используется'}\nРежим: burst\nTopic: {'создан' if topic_ok else 'не настроен'}", reply_markup=main_menu())
 
     @router.callback_query(F.data == "account:list")
     async def account_list(call):
@@ -114,7 +125,7 @@ def build_router(repo, manager, secret_box, client_factory, admin_ids=None, bot=
         account = await repo.get_account(int(call.data.rsplit(":", 1)[1]))
         if not account or account.telegram_user_id != call.from_user.id: await call.answer("Аккаунт не найден", show_alert=True); return
         nets = await repo.enabled_subnets(account.id); tasks = [t for t in await repo.user_tasks(call.from_user.id) if t.account_id == account.id and t.status == "RUNNING"]
-        await call.message.edit_text(f"👤 {account.display_name}\n\nProxy: {'✅ включён' if account.encrypted_proxy_url else '❌ нет'}\nЗадержка: {account.min_interval}–{account.max_interval} сек.\nПодсеть: {nets[0].cidr if nets else 'не выбрана'}\nАктивных задач: {len(tasks)}", reply_markup=account_actions(account.id, bool(account.topic_thread_id))); await call.answer()
+        await call.message.edit_text(f"👤 <b>{account.display_name}</b>\n\nСтатус: <b>{account.scheduler_status}</b>\nProxy: {'✅ включён' if account.encrypted_proxy_url else '❌ нет'}\nTargets: глобальный список\nАктивных задач: {len(tasks)}", reply_markup=account_actions(account.id, bool(account.topic_thread_id))); await call.answer()
     @router.callback_query(F.data.startswith("account:hunt:"))
     async def account_hunt(call):
         account_id = int(call.data.rsplit(":", 1)[1]); account = await repo.get_account(account_id)
@@ -228,7 +239,7 @@ def build_router(repo, manager, secret_box, client_factory, admin_ids=None, bot=
     async def subnet_save(call):
         account = await repo.get_account(chosen_account.get(call.from_user.id, 0)); ids = chosen_subnet.get(call.from_user.id, set())
         if not account or not ids: await call.answer("Сначала выберите подсеть", show_alert=True); return
-        await repo.set_subnets(account.id, [BY_ID[next(iter(ids))]]); subnet = (await repo.enabled_subnets(account.id))[0]; await manager.start_pair(call.from_user.id, account, subnet, "966826e6-d301-4bb5-aa13-77a324d15f0d"); await call.message.edit_text(f"🚀 Поиск запущен\n\nАккаунт: {account.display_name}\nПодсеть: {subnet.cidr}\nЗадержка: {account.min_interval}–{account.max_interval} сек.", reply_markup=main_menu()); await call.answer()
+        await repo.set_subnets(account.id, [BY_ID[next(iter(ids))]]); subnet = (await repo.enabled_subnets(account.id))[0]; await manager.start_pair(call.from_user.id, account, subnet, "966826e6-d301-4bb5-aa13-77a324d15f0d"); await call.message.edit_text(f"🚀 Поиск запущен\n\nАккаунт: {account.display_name}\nПодсеть: {subnet.cidr}\nРежим: burst", reply_markup=main_menu()); await call.answer()
     @router.callback_query(F.data == "task:list")
     async def task_list(call):
         tasks = [t for t in await manager.get_running_tasks() if t.telegram_user_id == call.from_user.id]
@@ -248,7 +259,7 @@ def build_router(repo, manager, secret_box, client_factory, admin_ids=None, bot=
     async def task_view(call):
         task = await manager.get_task(int(call.data.rsplit(":", 1)[1]))
         if not task or task.telegram_user_id != call.from_user.id: await call.answer("Задача не найдена", show_alert=True); return
-        await call.message.edit_text(f"📋 <b>Задача #{task.id}</b>\n\n<b>Подсеть:</b> <code>{task.subnet_cidr}</code>\n<b>Статус:</b> {task.status}\n<b>Попыток:</b> {task.attempts}\n<b>Интервал:</b> {task.min_interval}–{task.max_interval} сек.\n<b>Последняя ошибка:</b> {task.last_error or 'нет'}", reply_markup=task_actions(task.id)); await call.answer()
+        await call.message.edit_text(f"📋 <b>Задача #{task.id}</b>\n\n<b>Подсеть:</b> <code>{task.subnet_cidr}</code>\n<b>Статус:</b> {task.status}\n<b>Попыток:</b> {task.attempts}\n<b>Режим:</b> burst\n<b>Последняя ошибка:</b> {task.last_error or 'нет'}", reply_markup=task_actions(task.id)); await call.answer()
     @router.callback_query(F.data.startswith("task:pause:"))
     async def task_pause(call):
         task_id = int(call.data.rsplit(":", 1)[1]); task = await manager.get_task(task_id)

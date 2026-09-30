@@ -1,7 +1,7 @@
 from aiogram import F, Router
 from aiogram.types import CallbackQuery
 from app.config.regions import REGIONS
-from .keyboards import back, main_menu, scheduler_settings
+from .keyboards import account_burst_settings, back, main_menu, scheduler_settings
 
 
 def build_scheduler_ui(repo, manager):
@@ -22,6 +22,24 @@ def build_scheduler_ui(repo, manager):
     @router.callback_query(F.data == "scheduler:settings")
     async def settings(call):
         await settings_screen(call)
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("account:settings:"))
+    async def account_settings(call):
+        account = await repo.get_account(int(call.data.rsplit(":", 1)[1]))
+        if not account or account.telegram_user_id != call.from_user.id:
+            await call.answer("Аккаунт не найден", show_alert=True)
+            return
+        settings = await repo.scheduler_settings()
+        await call.message.edit_text(
+            f"⚙️ <b>Настройки аккаунта</b>\n\n👤 {account.display_name}\n"
+            "Параметры burst общие для scheduler и меняются кнопками ниже.\n\n"
+            f"⚡ Между запросами: <b>{settings.burst_request_delay:g} сек</b>\n"
+            f"🔄 Cooldown: <b>{settings.burst_cooldown} сек</b>\n"
+            f"🌐 API timeout: <b>{settings.api_timeout:g} сек</b>\n"
+            f"⚠️ Лимит ошибок: <b>{settings.errors_before_disable}</b>",
+            reply_markup=account_burst_settings(settings, account.id),
+        )
         await call.answer()
 
     @router.callback_query(F.data == "burst:delay")
@@ -99,6 +117,27 @@ def build_scheduler_ui(repo, manager):
         lines = ["📊 <b>Scheduler</b>", f"Активных аккаунтов: <b>{len(accounts)}</b>", f"Cooldown: <b>{settings.burst_cooldown} сек</b>", f"Auto stagger: <b>{stagger:g} сек</b>", "", "<b>Расписание:</b>"]
         lines += [f"{i * stagger:05.1f} сек · {account.display_name} · {account.scheduler_status}" for i, account in enumerate(accounts)]
         await call.message.edit_text("\n".join(lines), reply_markup=back())
+        await call.answer()
+
+    @router.callback_query(F.data == "stats:view")
+    async def stats(call):
+        values = await repo.user_attempt_stats(call.from_user.id)
+        total = sum(values.values())
+        found = values.get("FOUND", 0)
+        no_free = values.get("NO_FREE_IP", 0)
+        network = values.get("NETWORK_ERROR", 0)
+        permission = values.get("PERMISSION_ERROR", 0) + values.get("AUTH_ERROR", 0)
+        rate_limit = values.get("RATE_LIMIT", 0)
+        await call.message.edit_text(
+            "📈 <b>Статистика</b>\n\n"
+            f"Запросов: <b>{total}</b>\n"
+            f"✅ FOUND: <b>{found}</b>\n"
+            f"ℹ️ NO_FREE_IP: <b>{no_free}</b>\n"
+            f"🌐 Сетевые ошибки: <b>{network}</b>\n"
+            f"⛔ 403 / авторизация: <b>{permission}</b>\n"
+            f"⏱ 429: <b>{rate_limit}</b>",
+            reply_markup=back(),
+        )
         await call.answer()
 
     @router.callback_query(F.data.startswith("account:pause:"))

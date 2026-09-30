@@ -160,6 +160,16 @@ class Repository:
                 stats[key] = stats.get(key, 0) + 1
             return stats
 
+    async def user_attempt_stats(self, user_id: int):
+        async with self.sessions() as s:
+            rows = await s.execute(
+                select(Attempt.result, func.count(Attempt.id))
+                .join(Account, Account.id == Attempt.account_id)
+                .where(Account.telegram_user_id == user_id)
+                .group_by(Attempt.result)
+            )
+            return {str(result): count for result, count in rows.all()}
+
     async def create_task(self, **data):
         async with self.sessions() as s:
             duplicate = await s.scalar(select(HunterTask).where(HunterTask.account_id == data["account_id"], HunterTask.subnet_id == data["subnet_id"], HunterTask.status == TaskStatus.RUNNING.value))
