@@ -1,6 +1,9 @@
 import asyncio
+import logging
+import time
 
 from aiogram import Bot, Dispatcher
+from aiogram.exceptions import TelegramRetryAfter
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -19,6 +22,9 @@ from app.services.crypto import SecretBox
 from app.services.logger import configure_logging
 
 
+log = logging.getLogger(__name__)
+
+
 async def main():
     configure_logging(settings.log_level)
     if not settings.bot_token or not settings.admin_ids:
@@ -28,6 +34,7 @@ async def main():
     repo = Repository(db.sessions)
     box = SecretBox(settings.encryption_key)
     clients = {}
+    notification_last_sent = {}
 
     async def client_factory(account_id):
         account = await repo.get_account(account_id)
@@ -52,13 +59,31 @@ async def main():
             kind = "FOUND" if event == "FOUND" else str(event).split(":", 1)[0]
             preference = {"FOUND": "notify_found", "NO_FREE_IP": "notify_no_free_ip", "PERMISSION_ERROR": "notify_permission", "NETWORK_ERROR": "notify_network", "RATE_LIMIT": "notify_rate_limit", "SERVER_ERROR": "notify_server", "AUTH_ERROR": "notify_permission", "UNKNOWN": "notify_unknown"}.get(kind, "notify_unknown")
             if not getattr(account, preference, True): return
+            # NO_FREE_IP is a normal polling result. Do not flood the topic
+            # with the same message on every burst attempt.
+            if kind == "NO_FREE_IP":
+                key = (account.id, task.subnet_id)
+                now = time.monotonic()
+                if now - notification_last_sent.get(key, 0.0) < 60.0:
+                    return
+                notification_last_sent[key] = now
         chat_id = account.topic_chat_id if account and account.topic_chat_id else task.telegram_user_id
         thread_id = account.topic_thread_id if account and account.topic_thread_id else None
         text = found_message(account, task, ip, fip_id, elapsed) if event == "FOUND" else error_message(account, task, event)
         markup = None
         if str(event).startswith(("PERMISSION_ERROR", "AUTH_ERROR")):
             markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="▶️ Возобновить аккаунт", callback_data=f"scheduler:resume:{account.id}")]])
-        await bot.send_message(chat_id, text, message_thread_id=thread_id, reply_markup=markup)
+        try:
+            await bot.send_message(chat_id, text, message_thread_id=thread_id, reply_markup=markup)
+        except TelegramRetryAfter as exc:
+            # Telegram flood control must never affect the Selectel worker.
+            # The next polling cycle will be allowed to send again.
+            log.warning(
+                "Telegram notification throttled chat_id=%s retry_after=%ss event=%s",
+                chat_id, exc.retry_after, kind,
+            )
+        except Exception:
+            log.exception("Telegram notification failed chat_id=%s event=%s", chat_id, kind)
 
     manager = AccountSchedulerManager(repo, client_factory, notify, default_cooldown=settings.account_cooldown, stagger_seconds=settings.manual_stagger)
     bot = Bot(settings.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
