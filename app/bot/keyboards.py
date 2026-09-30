@@ -1,6 +1,13 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 
+def region_picker(prefix="region"):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🌐 ru-3", callback_data=f"{prefix}:ru-3"), InlineKeyboardButton(text="🌐 ru-9", callback_data=f"{prefix}:ru-9")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="home")],
+    ])
+
+
 def main_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Аккаунты", callback_data="account:list"), InlineKeyboardButton(text="▶️ Запустить", callback_data="hunt:start")],
