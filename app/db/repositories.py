@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from sqlalchemy import and_, delete, func, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
-from .models import Account, AccountSubnet, AccountTargetState, Attempt, FoundIP, HunterTask, RegionState, TargetSubnet, TaskStatus
+from .models import Account, AccountSubnet, AccountTargetState, Attempt, FoundIP, HunterTask, RegionState, SchedulerSettings, TargetSubnet, TaskStatus
 from app.config.regions import REGIONS
 
 
@@ -12,6 +12,29 @@ def now():
 class Repository:
     def __init__(self, sessions: async_sessionmaker):
         self.sessions = sessions
+
+    async def scheduler_settings(self):
+        async with self.sessions() as s:
+            settings = await s.get(SchedulerSettings, 1)
+            if not settings:
+                settings = SchedulerSettings(id=1)
+                s.add(settings)
+                await s.commit()
+                await s.refresh(settings)
+            return settings
+
+    async def update_scheduler_settings(self, **values):
+        async with self.sessions() as s:
+            settings = await s.get(SchedulerSettings, 1)
+            if not settings:
+                settings = SchedulerSettings(id=1)
+                s.add(settings)
+            for key, value in values.items():
+                if hasattr(settings, key):
+                    setattr(settings, key, value)
+            await s.commit()
+            await s.refresh(settings)
+            return settings
 
     async def add_account(self, **data) -> Account:
         async with self.sessions() as s:
@@ -84,6 +107,10 @@ class Repository:
             if account_id is not None:
                 query = query.where(~select(AccountTargetState.id).where(AccountTargetState.account_id == account_id, AccountTargetState.subnet_id == TargetSubnet.subnet_id, ~AccountTargetState.enabled).exists())
             return list((await s.scalars(query)).all())
+
+    async def all_targets(self):
+        async with self.sessions() as s:
+            return list((await s.scalars(select(TargetSubnet).order_by(TargetSubnet.order_index, TargetSubnet.subnet_id))).all())
 
     async def disable_account_target(self, account_id: int, subnet_id: str):
         async with self.sessions() as s:

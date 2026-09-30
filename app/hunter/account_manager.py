@@ -9,6 +9,12 @@ from .account_worker import AccountBurstWorker
 log = logging.getLogger(__name__)
 
 
+def calculate_stagger(cooldown_seconds: float, active_account_count: int):
+    if active_account_count <= 0:
+        return None
+    return float(cooldown_seconds) / active_account_count
+
+
 class BurstSchedulerManager:
     def __init__(self, repo, client_factory, notify, default_cooldown=360, stagger_seconds=20):
         self.repo = repo
@@ -29,18 +35,20 @@ class BurstSchedulerManager:
 
     async def recalculate_schedule(self):
         accounts = await self.repo.all_accounts()
+        settings = await self.repo.scheduler_settings()
         active = [a for a in accounts if self._active(a)]
         active.sort(key=lambda a: (a.scheduler_position, a.id))
         total = len(active)
         for position, account in enumerate(active):
             stagger = account.manual_stagger if not account.auto_stagger and account.manual_stagger is not None else (
-                (account.account_cooldown or self.default_cooldown) / total if account.auto_stagger and total else self.stagger_seconds
+                calculate_stagger(settings.burst_cooldown or self.default_cooldown, total) if settings.auto_stagger and total else self.stagger_seconds
             )
             # Rebuild only the next slot. A worker already inside a burst does
             # not read next_cycle_at until that burst has finished.
             next_cycle = datetime.utcnow() + timedelta(seconds=position * stagger)
             await self.repo.update_account(account.id, scheduler_position=position, next_cycle_at=next_cycle)
-        return [(a.id, i * ((a.account_cooldown or self.default_cooldown) / total if total else self.stagger_seconds)) for i, a in enumerate(active)]
+        spacing = calculate_stagger(settings.burst_cooldown or self.default_cooldown, total) if total else self.stagger_seconds
+        return [(a.id, i * spacing) for i, a in enumerate(active)]
 
     async def start_account(self, account_id, initial_delay=0):
         async with self._start_guard:
@@ -66,12 +74,13 @@ class BurstSchedulerManager:
 
     async def start(self):
         accounts = await self.repo.all_accounts()
+        settings = await self.repo.scheduler_settings()
         active = [a for a in accounts if self._active(a)]
         active.sort(key=lambda a: (a.scheduler_position, a.id))
         total = len(active)
         for position, account in enumerate(active):
-            if account.auto_stagger:
-                delay = position * ((account.account_cooldown or self.default_cooldown) / total) if total else 0
+            if settings.auto_stagger:
+                delay = position * (calculate_stagger(settings.burst_cooldown or self.default_cooldown, total) or 0) if total else 0
             else:
                 delay = position * (account.manual_stagger or self.stagger_seconds)
             await self.repo.update_account(account.id, scheduler_status="RUNNING", scheduler_position=position)

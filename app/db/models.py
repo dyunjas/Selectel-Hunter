@@ -104,6 +104,16 @@ class AccountTargetState(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
+class SchedulerSettings(Base):
+    __tablename__ = "scheduler_settings"
+    id: Mapped[int] = mapped_column(primary_key=True, default=1)
+    burst_request_delay: Mapped[float] = mapped_column(Float, default=1.0)
+    burst_cooldown: Mapped[int] = mapped_column(Integer, default=360)
+    api_timeout: Mapped[float] = mapped_column(Float, default=5.0)
+    errors_before_disable: Mapped[int] = mapped_column(Integer, default=30)
+    auto_stagger: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
 class HunterTask(Base):
     __tablename__ = "hunter_tasks"
     __table_args__ = (Index("ix_running_pair", "account_id", "subnet_id", "status"),)

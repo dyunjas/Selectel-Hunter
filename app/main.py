@@ -7,6 +7,7 @@ from aiogram.enums import ParseMode
 
 from app.bot import build_router
 from app.bot.multisubnet import build_multisubnet_router
+from app.bot.scheduler_ui import build_scheduler_ui
 from app.bot.formatting import error_message, found_message
 from app.config import settings
 from app.config.regions import REGIONS
@@ -40,7 +41,8 @@ async def main():
             return cached[1]
         if cached:
             await cached[1].close()
-        client = SelectelClient(account, box.decrypt(account.encrypted_password), proxy=proxy, region="ru-3", network_api_url=region_config["network_api_url"], floating_network_id=region_config["floating_network_id"], api_timeout=account.api_timeout or settings.api_timeout)
+        scheduler_settings = await repo.scheduler_settings()
+        client = SelectelClient(account, box.decrypt(account.encrypted_password), proxy=proxy, region="ru-3", network_api_url=region_config["network_api_url"], floating_network_id=region_config["floating_network_id"], api_timeout=scheduler_settings.api_timeout or settings.api_timeout)
         clients[account_id] = (fingerprint, client)
         return client
 
@@ -62,6 +64,7 @@ async def main():
     bot = Bot(settings.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dispatcher = Dispatcher()
     dispatcher.include_router(build_multisubnet_router(repo, manager, set(settings.admin_ids)))
+    dispatcher.include_router(build_scheduler_ui(repo, manager))
     dispatcher.include_router(build_router(repo, manager, box, client_factory, set(settings.admin_ids), bot, settings.notification_chat_id))
     await manager.restore()
     try:

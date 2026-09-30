@@ -108,7 +108,8 @@ class AccountBurstWorker:
             return "cooldown"
         if kind == ErrorType.NETWORK_ERROR.value:
             errors = int(account.consecutive_network_errors or 0) + 1
-            limit = max(1, int(account.errors_before_disable or 30))
+            scheduler_settings = await self.repo.scheduler_settings()
+            limit = max(1, int(scheduler_settings.errors_before_disable or 30))
             if errors >= limit:
                 await self._state(scheduler_status="ERROR", consecutive_network_errors=errors, next_cycle_at=None)
                 await self._recalculate()
@@ -153,7 +154,8 @@ class AccountBurstWorker:
                     await self._state(scheduler_status="PAUSED", next_cycle_at=None)
                     return "stop"
             if number + 1 < len(targets):
-                delay = float(current.burst_subnet_delay or 0.3)
+                scheduler_settings = await self.repo.scheduler_settings()
+                delay = float(scheduler_settings.burst_request_delay or 1.0)
                 if targets[number + 1].region != subnet.region:
                     delay += float(getattr(current, "region_delay", 1.0) or 1.0)
                 await asyncio.sleep(max(0.0, delay))
@@ -182,7 +184,8 @@ class AccountBurstWorker:
             if result == "cooldown":
                 continue
             finished = utcnow()
-            next_cycle = cycle_started + timedelta(seconds=max(0, int(account.account_cooldown or 360)))
+            scheduler_settings = await self.repo.scheduler_settings()
+            next_cycle = cycle_started + timedelta(seconds=max(0, int(scheduler_settings.burst_cooldown or 360)))
             await self._state(last_cycle_finished_at=finished, next_cycle_at=next_cycle)
             log.info("account=%s cycle=%s finished next_cycle=%s", account.id, self.cycle_id, next_cycle.isoformat())
 
