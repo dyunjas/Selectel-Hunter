@@ -34,6 +34,7 @@ def build_scheduler_ui(repo, manager):
         await call.message.edit_text(
             f"⚙️ <b>Настройки аккаунта</b>\n\n👤 {account.display_name}\n"
             "Параметры burst общие для scheduler и меняются кнопками ниже.\n\n"
+            f"🌐 Прокси: <b>{'установлен' if account.encrypted_proxy_url else 'не установлен'}</b>\n"
             f"⚡ Между запросами: <b>{settings.burst_request_delay:g} сек</b>\n"
             f"🔄 Cooldown: <b>{settings.burst_cooldown} сек</b>\n"
             f"🌐 API timeout: <b>{settings.api_timeout:g} сек</b>\n"

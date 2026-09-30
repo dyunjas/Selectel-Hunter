@@ -79,6 +79,7 @@ def scheduler_settings(settings):
 
 def account_burst_settings(settings, account_id):
     keyboard = scheduler_settings(settings).inline_keyboard[:-1]
+    keyboard.append([InlineKeyboardButton(text="🌐 Прокси аккаунта", callback_data=f"account:proxy:{account_id}")])
     keyboard.append([InlineKeyboardButton(text="🔔 Уведомления", callback_data=f"account:notifications:{account_id}")])
     keyboard.append([InlineKeyboardButton(text="🔙 К аккаунту", callback_data=f"account:view:{account_id}")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)

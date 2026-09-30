@@ -33,6 +33,10 @@ class EditAccount(StatesGroup):
     name = State(); domain = State(); username = State(); password = State(); project = State(); region = State(); proxy = State(); min_interval = State(); max_interval = State()
 
 
+class AccountProxy(StatesGroup):
+    value = State()
+
+
 def build_router(repo, manager, secret_box, client_factory, admin_ids=None, bot=None, notification_chat_id=0):
     router = Router(); guard = AdminOnlyMiddleware(admin_ids or set()); router.message.outer_middleware(guard); router.callback_query.outer_middleware(guard)
     chosen_account = {}; chosen_subnet = {}
@@ -136,6 +140,62 @@ def build_router(repo, manager, secret_box, client_factory, admin_ids=None, bot=
         account = await repo.get_account(int(call.data.rsplit(":", 1)[1]))
         if not account or account.telegram_user_id != call.from_user.id: await call.answer("Аккаунт не найден", show_alert=True); return
         await call.message.edit_text(f"🔔 Уведомления\n\nАккаунт: {account.display_name}\n\nВыберите, какие события отправлять в topic:", reply_markup=notification_settings(account)); await call.answer()
+
+    @router.callback_query(F.data.startswith("account:proxy:"))
+    async def account_proxy_settings(call, state):
+        account = await repo.get_account(int(call.data.rsplit(":", 1)[1]))
+        if not account or account.telegram_user_id != call.from_user.id:
+            await call.answer("Аккаунт не найден", show_alert=True)
+            return
+        await state.update_data(account_id=account.id)
+        await state.set_state(AccountProxy.value)
+        await call.message.edit_text(
+            f"🌐 <b>Прокси аккаунта</b>\n\n"
+            f"Аккаунт: <b>{account.display_name}</b>\n"
+            f"Текущий статус: {'✅ установлен' if account.encrypted_proxy_url else '❌ не установлен'}\n\n"
+            "Отправьте proxy URL в формате:\n"
+            "<code>http://user:pass@host:port</code>\n"
+            "<code>socks5://user:pass@host:port</code>\n\n"
+            "Чтобы удалить прокси, отправьте <code>-</code>.",
+            reply_markup=back(f"account:proxy_cancel:{account.id}", "🔙 Отмена"),
+        )
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("account:proxy_cancel:"))
+    async def account_proxy_cancel(call, state):
+        await state.clear()
+        account = await repo.get_account(int(call.data.rsplit(":", 1)[1]))
+        if not account or account.telegram_user_id != call.from_user.id:
+            await call.answer("Аккаунт не найден", show_alert=True)
+            return
+        await call.message.edit_text(f"👤 <b>{account.display_name}</b>", reply_markup=account_actions(account.id, bool(account.topic_thread_id)))
+        await call.answer()
+
+    @router.message(AccountProxy.value)
+    async def account_proxy_save(message, state):
+        data = await state.get_data()
+        account = await repo.get_account(data.get("account_id"))
+        if not account or account.telegram_user_id != message.from_user.id:
+            await state.clear()
+            await message.answer("Аккаунт не найден", reply_markup=main_menu())
+            return
+        value = (message.text or "").strip()
+        if value in {"-", "none"}:
+            encrypted = None
+            status = "отключён"
+        elif "://" not in value:
+            await message.answer("Укажите proxy URL с протоколом: http://, https:// или socks5://")
+            return
+        else:
+            encrypted = secret_box.encrypt(value)
+            status = "установлен"
+        await repo.update_account(account.id, encrypted_proxy_url=encrypted)
+        await state.clear()
+        await message.answer(
+            f"✅ Прокси для аккаунта <b>{account.display_name}</b> {status}.\n"
+            "Изменение будет использовано при следующем запросе.",
+            reply_markup=account_actions(account.id, bool(account.topic_thread_id)),
+        )
     @router.callback_query(F.data.startswith("notify:toggle:"))
     async def notification_toggle(call):
         _, _, account_id, field = call.data.split(":", 3); account = await repo.toggle_account_notification(int(account_id), field)
