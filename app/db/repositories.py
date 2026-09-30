@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from sqlalchemy import and_, delete, func, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
-from .models import Account, AccountSubnet, Attempt, FoundIP, HunterTask, TaskStatus
+from .models import Account, AccountSubnet, AccountTargetState, Attempt, FoundIP, HunterTask, RegionState, TargetSubnet, TaskStatus
 from app.config.regions import REGIONS
 
 
@@ -20,6 +20,9 @@ class Repository:
             count = await s.scalar(select(func.count(Account.id)).where(Account.enabled))
             if count >= 20:
                 raise ValueError("Достигнут лимит: не более 20 аккаунтов")
+            if "scheduler_position" not in data:
+                position = await s.scalar(select(func.max(Account.scheduler_position)))
+                data["scheduler_position"] = (position if position is not None else -1) + 1
             obj = Account(**data); s.add(obj); await s.commit(); await s.refresh(obj); return obj
 
     async def accounts(self, user_id: int):
@@ -48,6 +51,7 @@ class Repository:
             await s.execute(delete(FoundIP).where(FoundIP.account_id == account_id))
             await s.execute(delete(HunterTask).where(HunterTask.account_id == account_id))
             await s.execute(delete(AccountSubnet).where(AccountSubnet.account_id == account_id))
+            await s.execute(delete(AccountTargetState).where(AccountTargetState.account_id == account_id))
             await s.execute(delete(Attempt).where(Attempt.account_id == account_id))
             await s.execute(delete(Account).where(Account.id == account_id)); await s.commit()
 
@@ -73,6 +77,39 @@ class Repository:
             account = await s.get(Account, account_id)
             region = account.region if account else "ru-3"
             return list((await s.scalars(select(AccountSubnet).where(AccountSubnet.account_id == account_id, AccountSubnet.enabled, AccountSubnet.region == region))).all())
+
+    async def enabled_targets(self, account_id: int | None = None):
+        async with self.sessions() as s:
+            query = select(TargetSubnet).join(RegionState, RegionState.region == TargetSubnet.region).where(TargetSubnet.enabled, RegionState.enabled).order_by(TargetSubnet.order_index, TargetSubnet.subnet_id)
+            if account_id is not None:
+                query = query.where(~select(AccountTargetState.id).where(AccountTargetState.account_id == account_id, AccountTargetState.subnet_id == TargetSubnet.subnet_id, ~AccountTargetState.enabled).exists())
+            return list((await s.scalars(query)).all())
+
+    async def disable_account_target(self, account_id: int, subnet_id: str):
+        async with self.sessions() as s:
+            state = await s.scalar(select(AccountTargetState).where(AccountTargetState.account_id == account_id, AccountTargetState.subnet_id == subnet_id))
+            if state:
+                state.enabled = False
+            else:
+                s.add(AccountTargetState(account_id=account_id, subnet_id=subnet_id, enabled=False))
+            await s.commit()
+
+    async def set_target_enabled(self, subnet_id: str, enabled: bool):
+        async with self.sessions() as s:
+            await s.execute(update(TargetSubnet).where(TargetSubnet.subnet_id == subnet_id).values(enabled=enabled))
+            await s.commit()
+
+    async def set_targets_enabled(self, selected_ids: set[str]):
+        async with self.sessions() as s:
+            targets = list((await s.scalars(select(TargetSubnet))).all())
+            for target in targets:
+                target.enabled = target.subnet_id in selected_ids
+            await s.commit()
+
+    async def set_region_enabled(self, region: str, enabled: bool):
+        async with self.sessions() as s:
+            await s.execute(update(RegionState).where(RegionState.region == region).values(enabled=enabled))
+            await s.commit()
 
     async def disable_subnet(self, account_id: int, subnet_id: str):
         async with self.sessions() as s:

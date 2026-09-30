@@ -34,15 +34,15 @@ def build_multisubnet_router(repo, manager, admin_ids=None):
             return None
         return account
 
-    def region_subnets(region):
-        return [item for item in TARGET_SUBNETS if item["region"] == region]
+    def region_subnets(region=None):
+        return list(TARGET_SUBNETS)
 
     async def show_selector(call, state, account):
-        available = region_subnets(account.region)
-        selected = {item["subnet_id"] for item in available}
+        available = region_subnets()
+        selected = {item.subnet_id for item in await repo.enabled_targets()}
         await state.update_data(selected_account=account.id, selected_subnets=list(selected))
         await call.message.edit_text(
-            f"🎯 <b>Целевые подсети</b>\n\nАккаунт: <b>{account.display_name}</b>\nРегион: <code>{account.region}</code>\n\nВыберите одну или несколько подсетей:",
+            f"🎯 <b>Глобальные целевые подсети</b>\n\nАккаунт: <b>{account.display_name}</b>\nАккаунт проверит все включённые регионы и подсети.\n\nВыберите одну или несколько подсетей:",
             reply_markup=subnets(available, selected),
         )
 
@@ -71,16 +71,16 @@ def build_multisubnet_router(repo, manager, admin_ids=None):
             selected.add(subnet_id)
         await state.update_data(selected_subnets=list(selected))
         account = await repo.get_account(data.get("selected_account"))
-        await call.message.edit_reply_markup(reply_markup=subnets(region_subnets(account.region), selected))
+        await call.message.edit_reply_markup(reply_markup=subnets(region_subnets(), selected))
         await call.answer("Выбор обновлён")
 
     @router.callback_query(F.data == "subnet:all")
     async def select_all(call, state):
         data = await state.get_data()
         account = await repo.get_account(data.get("selected_account"))
-        selected = {item["subnet_id"] for item in region_subnets(account.region)}
+        selected = {item["subnet_id"] for item in region_subnets()}
         await state.update_data(selected_subnets=list(selected))
-        await call.message.edit_reply_markup(reply_markup=subnets(region_subnets(account.region), selected))
+        await call.message.edit_reply_markup(reply_markup=subnets(region_subnets(), selected))
         await call.answer("Выбраны все подсети")
 
     @router.callback_query(F.data == "subnet:none")
@@ -88,7 +88,7 @@ def build_multisubnet_router(repo, manager, admin_ids=None):
         data = await state.get_data()
         account = await repo.get_account(data.get("selected_account"))
         await state.update_data(selected_subnets=[])
-        await call.message.edit_reply_markup(reply_markup=subnets(region_subnets(account.region), set()))
+        await call.message.edit_reply_markup(reply_markup=subnets(region_subnets(), set()))
         await call.answer("Выбор очищен")
 
     @router.callback_query(F.data == "subnet:save")
@@ -99,12 +99,12 @@ def build_multisubnet_router(repo, manager, admin_ids=None):
         if not account or not selected:
             await call.answer("Выберите хотя бы одну подсеть", show_alert=True)
             return
-        selected_items = [BY_ID[item] for item in selected if BY_ID[item]["region"] == account.region]
-        await repo.set_subnets(account.id, selected_items)
+        selected_items = [BY_ID[item] for item in selected]
+        await repo.set_targets_enabled(selected)
         await manager.start_account(account.id)
         await state.clear()
         await call.message.edit_text(
-            f"🚀 <b>Поиск запущен</b>\n\nАккаунт: <b>{account.display_name}</b>\nРегион: <code>{account.region}</code>\nПодсетей в очереди: <b>{len(selected_items)}</b>\n\nЗапросы выполняются последовательно с интервалом аккаунта.",
+            f"🚀 <b>Поиск запущен</b>\n\nАккаунт: <b>{account.display_name}</b>\nГлобальных targets в очереди: <b>{len(selected_items)}</b>\n\nАккаунт последовательно проверит все включённые регионы.",
             reply_markup=main_menu(),
         )
         await call.answer()

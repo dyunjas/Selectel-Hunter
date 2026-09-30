@@ -16,6 +16,12 @@ class Settings(BaseSettings):
     default_min_interval: int = 30
     default_max_interval: int = 60
     min_allowed_interval: int = 30
+    burst_subnet_delay: float = 0.3
+    account_cooldown: int = 360
+    auto_stagger: bool = True
+    manual_stagger: int = 20
+    api_timeout: float = 5.0
+    errors_before_disable: int = 30
     notification_chat_id: int = Field(0, alias="NOTIFICATION_CHAT_ID")
 
     @field_validator("admin_ids", mode="before")

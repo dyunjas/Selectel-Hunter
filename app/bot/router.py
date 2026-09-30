@@ -68,6 +68,11 @@ def build_router(repo, manager, secret_box, client_factory, admin_ids=None, bot=
     @router.message(AddAccount.password)
     async def account_password(message, state): await state.update_data(password=message.text); await state.set_state(AddAccount.project); await message.answer("Шаг 5 из 9\nВведите project ID или project name:")
     @router.message(AddAccount.project)
+    async def account_project_global(message, state):
+        await state.update_data(project=message.text, region="ru-3")
+        await state.set_state(AddAccount.proxy)
+        await message.answer("Шаг 6 из 8\nРегион аккаунта больше не задаётся. Будут проверяться все включённые регионы.\n\nВведите HTTP/SOCKS5 proxy или отправьте `-`:")
+    @router.message(AddAccount.project)
     async def account_project(message, state): await state.update_data(project=message.text); await state.set_state(AddAccount.region); await message.answer("Шаг 6 из 9\nВведите регион или отправьте ru-3:")
     @router.message(AddAccount.region)
     async def account_region(message, state): await state.update_data(region=message.text or "ru-3"); await state.set_state(AddAccount.proxy); await message.answer("Шаг 7 из 9\nВведите HTTP proxy или отправьте `-`, если proxy не нужен:")

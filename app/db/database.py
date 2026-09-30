@@ -1,6 +1,8 @@
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from .models import Base
+from app.config.regions import REGIONS
+from app.config.subnets import TARGET_SUBNETS
 
 
 class Database:
@@ -13,6 +15,10 @@ class Database:
             if self.engine.url.drivername == "sqlite+aiosqlite":
                 await conn.execute(text("PRAGMA foreign_keys=ON"))
             await conn.run_sync(Base.metadata.create_all)
+            for region in REGIONS:
+                await conn.execute(text("INSERT OR IGNORE INTO region_states(region, enabled) VALUES (:region, 1)"), {"region": region})
+            for order_index, subnet in enumerate(TARGET_SUBNETS):
+                await conn.execute(text("INSERT OR IGNORE INTO target_subnets(subnet_id, region, cidr, enabled, order_index) VALUES (:id, :region, :cidr, 1, :order_index)"), {"id": subnet["subnet_id"], "region": subnet["region"], "cidr": subnet["cidr"], "order_index": order_index})
             if self.engine.url.drivername == "sqlite+aiosqlite":
                 columns = {
                     "encrypted_proxy_url": "TEXT",
@@ -36,6 +42,17 @@ class Database:
                     "next_request_at": "DATETIME",
                     "cooldown_until": "DATETIME",
                     "consecutive_network_errors": "INTEGER NOT NULL DEFAULT 0",
+                    "scheduler_position": "INTEGER NOT NULL DEFAULT 0",
+                    "last_cycle_started_at": "DATETIME",
+                    "last_cycle_finished_at": "DATETIME",
+                    "next_cycle_at": "DATETIME",
+                    "burst_subnet_delay": "REAL NOT NULL DEFAULT 0.3",
+                    "account_cooldown": "INTEGER NOT NULL DEFAULT 360",
+                    "auto_stagger": "INTEGER NOT NULL DEFAULT 1",
+                    "manual_stagger": "INTEGER",
+                    "api_timeout": "REAL NOT NULL DEFAULT 5",
+                    "errors_before_disable": "INTEGER NOT NULL DEFAULT 30",
+                    "stop_account_after_found": "INTEGER NOT NULL DEFAULT 0",
                 }
                 existing = await conn.execute(text("PRAGMA table_info(accounts)"))
                 names = {row[1] for row in existing.fetchall()}
@@ -55,7 +72,6 @@ class Database:
                 found_names = {row[1] for row in found_columns.fetchall()}
                 if "region" not in found_names:
                     await conn.execute(text("ALTER TABLE found_ips ADD COLUMN region TEXT NOT NULL DEFAULT 'ru-3'"))
-                from app.config.subnets import TARGET_SUBNETS
                 for item in TARGET_SUBNETS:
                     await conn.execute(
                         text("UPDATE account_subnets SET region = :region WHERE subnet_id = :subnet_id"),

@@ -51,6 +51,17 @@ class Account(Base):
     next_request_at: Mapped[datetime | None] = mapped_column(DateTime)
     cooldown_until: Mapped[datetime | None] = mapped_column(DateTime)
     consecutive_network_errors: Mapped[int] = mapped_column(Integer, default=0)
+    scheduler_position: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    last_cycle_started_at: Mapped[datetime | None] = mapped_column(DateTime)
+    last_cycle_finished_at: Mapped[datetime | None] = mapped_column(DateTime)
+    next_cycle_at: Mapped[datetime | None] = mapped_column(DateTime)
+    burst_subnet_delay: Mapped[float] = mapped_column(Float, default=0.3)
+    account_cooldown: Mapped[int] = mapped_column(Integer, default=360)
+    auto_stagger: Mapped[bool] = mapped_column(Boolean, default=True)
+    manual_stagger: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    api_timeout: Mapped[float] = mapped_column(Float, default=5.0)
+    errors_before_disable: Mapped[int] = mapped_column(Integer, default=30)
+    stop_account_after_found: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
     subnets = relationship("AccountSubnet", cascade="all, delete-orphan")
@@ -66,6 +77,31 @@ class AccountSubnet(Base):
     region: Mapped[str] = mapped_column(String(40), default="ru-3", index=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class RegionState(Base):
+    __tablename__ = "region_states"
+    region: Mapped[str] = mapped_column(String(40), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class TargetSubnet(Base):
+    __tablename__ = "target_subnets"
+    subnet_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    region: Mapped[str] = mapped_column(String(40), index=True)
+    cidr: Mapped[str] = mapped_column(String(50))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    order_index: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class AccountTargetState(Base):
+    __tablename__ = "account_target_states"
+    __table_args__ = (UniqueConstraint("account_id", "subnet_id", name="uq_account_target_state"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), index=True)
+    subnet_id: Mapped[str] = mapped_column(String(36), index=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
 class HunterTask(Base):

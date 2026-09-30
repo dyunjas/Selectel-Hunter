@@ -6,16 +6,18 @@ try:
 except ImportError:  # The dependency is optional until a SOCKS proxy is configured.
     ProxyConnector = None
 from .errors import ErrorClassifier, ErrorType, SelectelError
+from app.config.regions import REGIONS
 
 log = logging.getLogger(__name__)
 
 
 class SelectelClient:
-    def __init__(self, account, password: str, default_network_id: str | None = None, proxy: str | None = None, region: str | None = None, network_api_url: str | None = None, floating_network_id: str | None = None):
+    def __init__(self, account, password: str, default_network_id: str | None = None, proxy: str | None = None, region: str | None = None, network_api_url: str | None = None, floating_network_id: str | None = None, api_timeout: float | None = None):
         self.account, self.password, self.region = account, password, region or account.region
         self.network_id = floating_network_id or default_network_id
         self.network_api_url = network_api_url or account.network_api_url
         self.proxy = proxy
+        self.api_timeout = api_timeout or getattr(account, "api_timeout", 5.0)
         self.session: aiohttp.ClientSession | None = None; self.token: str | None = None
         self.socks_proxy = bool(proxy and proxy.lower().startswith(("socks4://", "socks4a://", "socks5://", "socks5h://")))
 
@@ -24,7 +26,7 @@ class SelectelClient:
             if self.socks_proxy and ProxyConnector is None:
                 raise SelectelError(ErrorType.UNKNOWN, "SOCKS proxy support is not installed; run pip install aiohttp-socks")
             connector = ProxyConnector.from_url(self.proxy) if self.socks_proxy else None
-            self.session = aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=30, connect=10))
+            self.session = aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=self.api_timeout, connect=self.api_timeout))
 
     async def close(self):
         if self.session: await self.session.close(); self.session = None
@@ -48,14 +50,15 @@ class SelectelClient:
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
             raise SelectelError(ErrorType.NETWORK_ERROR, "Selectel authentication network error") from exc
 
-    async def _request(self, method: str, path: str, **kwargs) -> Any:
+    async def _request(self, method: str, path: str, region: str | None = None, **kwargs) -> Any:
         await self.open()
         if not self.token: await self.authenticate()
         headers = {"X-Auth-Token": self.token, "Content-Type": "application/json"}
         for attempt in range(2):
             if self.proxy and not self.socks_proxy: kwargs["proxy"] = self.proxy
             try:
-                async with self.session.request(method, f"{self.network_api_url.rstrip('/')}/{path.lstrip('/')}", headers=headers, **kwargs) as response:
+                endpoint = REGIONS.get(region or self.region, REGIONS.get(self.region, REGIONS["ru-3"]))["network_api_url"]
+                async with self.session.request(method, f"{endpoint.rstrip('/')}/{path.lstrip('/')}", headers=headers, **kwargs) as response:
                     payload = await response.json(content_type=None)
                     if response.status == 401 and attempt == 0:
                         # После изменения IAM-ролей старый Keystone token может
@@ -76,11 +79,14 @@ class SelectelClient:
 
     async def validate_account(self): return await self._request("GET", "floatingip_pools")
 
-    async def create_floating_ip(self, subnet_id: str):
+    async def create_floating_ip(self, region: str, subnet_id: str | None = None):
+        if subnet_id is None:
+            subnet_id, region = region, self.region
+        region_config = REGIONS[region]
         try:
-            return (await self._request("POST", "floatingips", json={"floatingip": {"floating_network_id": self.network_id, "subnet_id": subnet_id}})).get("floatingip", {})
+            return (await self._request("POST", "floatingips", region=region, json={"floatingip": {"floating_network_id": region_config["floating_network_id"], "subnet_id": subnet_id}})).get("floatingip", {})
         except SelectelError as exc:
-            raise SelectelError(exc.kind, f"{exc}; floating_network_id={self.network_id}; subnet_id={subnet_id}", exc.retry_after, exc.status) from exc
+            raise SelectelError(exc.kind, f"{exc}; region={region}; floating_network_id={region_config['floating_network_id']}; subnet_id={subnet_id}", exc.retry_after, exc.status) from exc
 
     async def get_floating_ips(self): return await self._request("GET", "floatingips")
     async def get_floatingip_pools(self): return await self._request("GET", "floatingip_pools")

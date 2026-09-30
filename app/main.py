@@ -31,14 +31,16 @@ async def main():
     async def client_factory(account_id):
         account = await repo.get_account(account_id)
         proxy = box.decrypt(account.encrypted_proxy_url) if account.encrypted_proxy_url else None
-        region_config = REGIONS.get(account.region, REGIONS["ru-3"])
-        fingerprint = (account.encrypted_password, account.encrypted_proxy_url, account.region, account.username, account.project_id)
+        # The client is account-scoped for auth/proxy only. Each resource request
+        # selects its own endpoint from REGIONS by target.region.
+        region_config = REGIONS["ru-3"]
+        fingerprint = (account.encrypted_password, account.encrypted_proxy_url, account.username, account.project_id)
         cached = clients.get(account_id)
         if cached and cached[0] == fingerprint:
             return cached[1]
         if cached:
             await cached[1].close()
-        client = SelectelClient(account, box.decrypt(account.encrypted_password), proxy=proxy, region=account.region, network_api_url=region_config["network_api_url"], floating_network_id=region_config["floating_network_id"])
+        client = SelectelClient(account, box.decrypt(account.encrypted_password), proxy=proxy, region="ru-3", network_api_url=region_config["network_api_url"], floating_network_id=region_config["floating_network_id"], api_timeout=account.api_timeout or settings.api_timeout)
         clients[account_id] = (fingerprint, client)
         return client
 
@@ -56,12 +58,12 @@ async def main():
             markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="▶️ Возобновить аккаунт", callback_data=f"scheduler:resume:{account.id}")]])
         await bot.send_message(chat_id, text, message_thread_id=thread_id, reply_markup=markup)
 
-    manager = AccountSchedulerManager(repo, client_factory, notify, default_interval=(settings.default_min_interval + settings.default_max_interval) / 2)
+    manager = AccountSchedulerManager(repo, client_factory, notify, default_cooldown=settings.account_cooldown, stagger_seconds=settings.manual_stagger)
     bot = Bot(settings.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dispatcher = Dispatcher()
     dispatcher.include_router(build_multisubnet_router(repo, manager, set(settings.admin_ids)))
     dispatcher.include_router(build_router(repo, manager, box, client_factory, set(settings.admin_ids), bot, settings.notification_chat_id))
-    await manager.restore_all()
+    await manager.restore()
     try:
         await dispatcher.start_polling(bot)
     finally:
