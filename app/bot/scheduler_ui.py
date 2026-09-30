@@ -1,7 +1,7 @@
 from aiogram import F, Router
 from aiogram.types import CallbackQuery
 from app.config.regions import REGIONS
-from .keyboards import account_burst_settings, back, main_menu, scheduler_settings
+from .keyboards import account_burst_settings, back, main_menu, region_settings, scheduler_settings
 
 
 def build_scheduler_ui(repo, manager):
@@ -171,6 +171,28 @@ def build_scheduler_ui(repo, manager):
         rows.append([InlineKeyboardButton(text="🔙 Назад", callback_data="home")])
         await call.message.edit_text("🎯 <b>Глобальные targets</b>\n\nНажмите на подсеть, чтобы отключить её для всех аккаунтов.", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
         await call.answer()
+
+    @router.callback_query(F.data == "regions:view")
+    async def regions(call):
+        states = await repo.region_states()
+        enabled = sum(1 for state in states if state.enabled)
+        await call.message.edit_text(
+            f"🌍 <b>Регионы</b>\n\nАктивно: <b>{enabled}/{len(states)}</b>\n"
+            "Нажмите на регион, чтобы включить или выключить его для всех аккаунтов.",
+            reply_markup=region_settings(states),
+        )
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("region:toggle:"))
+    async def region_toggle(call):
+        region = call.data.rsplit(":", 1)[1]
+        states = await repo.region_states()
+        current = next((state for state in states if state.region == region), None)
+        if current is None:
+            await call.answer("Регион не найден", show_alert=True)
+            return
+        await repo.set_region_enabled(region, not current.enabled)
+        await regions(call)
 
     @router.callback_query(F.data.startswith("target:toggle:"))
     async def target_toggle(call):

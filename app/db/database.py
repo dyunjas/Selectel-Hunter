@@ -19,6 +19,7 @@ class Database:
                 await conn.execute(text("INSERT OR IGNORE INTO region_states(region, enabled) VALUES (:region, 1)"), {"region": region})
             for order_index, subnet in enumerate(TARGET_SUBNETS):
                 await conn.execute(text("INSERT OR IGNORE INTO target_subnets(subnet_id, region, cidr, enabled, order_index) VALUES (:id, :region, :cidr, 1, :order_index)"), {"id": subnet["subnet_id"], "region": subnet["region"], "cidr": subnet["cidr"], "order_index": order_index})
+                await conn.execute(text("UPDATE target_subnets SET region = :region, cidr = :cidr, order_index = :order_index WHERE subnet_id = :id"), {"id": subnet["subnet_id"], "region": subnet["region"], "cidr": subnet["cidr"], "order_index": order_index})
             if self.engine.url.drivername == "sqlite+aiosqlite":
                 columns = {
                     "encrypted_proxy_url": "TEXT",

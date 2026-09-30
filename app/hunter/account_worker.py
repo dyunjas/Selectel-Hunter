@@ -127,6 +127,9 @@ class AccountBurstWorker:
             await self._state(scheduler_status="IDLE", next_cycle_at=None)
             return "stop"
         for number, subnet in enumerate(targets):
+            current_targets = await self.repo.enabled_targets(account.id)
+            if subnet.subnet_id not in {target.subnet_id for target in current_targets}:
+                continue
             current = await self.repo.get_account(account.id)
             if not current or current.scheduler_status != "RUNNING":
                 return "stop"
@@ -156,8 +159,6 @@ class AccountBurstWorker:
             if number + 1 < len(targets):
                 scheduler_settings = await self.repo.scheduler_settings()
                 delay = float(scheduler_settings.burst_request_delay or 1.0)
-                if targets[number + 1].region != subnet.region:
-                    delay += float(getattr(current, "region_delay", 1.0) or 1.0)
                 await asyncio.sleep(max(0.0, delay))
         return "finished"
 

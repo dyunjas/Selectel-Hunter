@@ -12,8 +12,9 @@ def main_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Аккаунты", callback_data="account:list"), InlineKeyboardButton(text="▶️ Запустить", callback_data="hunt:start")],
         [InlineKeyboardButton(text="📊 Scheduler", callback_data="scheduler:view"), InlineKeyboardButton(text="🎯 Цели", callback_data="targets:view")],
-        [InlineKeyboardButton(text="✅ Найденные IP", callback_data="found:list"), InlineKeyboardButton(text="⚙️ Burst настройки", callback_data="scheduler:settings")],
-        [InlineKeyboardButton(text="📈 Статистика", callback_data="stats:view"), InlineKeyboardButton(text="ℹ️ Помощь", callback_data="help")],
+        [InlineKeyboardButton(text="🌍 Регионы", callback_data="regions:view"), InlineKeyboardButton(text="✅ Найденные IP", callback_data="found:list")],
+        [InlineKeyboardButton(text="⚙️ Burst настройки", callback_data="scheduler:settings"), InlineKeyboardButton(text="📈 Статистика", callback_data="stats:view")],
+        [InlineKeyboardButton(text="ℹ️ Помощь", callback_data="help")],
     ])
 
 
@@ -83,3 +84,20 @@ def account_burst_settings(settings, account_id):
     keyboard.append([InlineKeyboardButton(text="🔔 Уведомления", callback_data=f"account:notifications:{account_id}")])
     keyboard.append([InlineKeyboardButton(text="🔙 К аккаунту", callback_data=f"account:view:{account_id}")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+def region_settings(states):
+    rows = []
+    for state in states:
+        mark = "✅" if state.enabled else "▫️"
+        rows.append([InlineKeyboardButton(text=f"{mark} {state.region}", callback_data=f"region:toggle:{state.region}")])
+    rows.append([InlineKeyboardButton(text="🔙 Назад", callback_data="home")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+# Keep the legacy account-region picker compatible with all configured regions.
+def region_picker(prefix="region"):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🌍 ru-1", callback_data=f"{prefix}:ru-1"), InlineKeyboardButton(text="🌍 ru-3", callback_data=f"{prefix}:ru-3"), InlineKeyboardButton(text="🌍 ru-9", callback_data=f"{prefix}:ru-9")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="home")],
+    ])

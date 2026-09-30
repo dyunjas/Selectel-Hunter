@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from sqlalchemy import and_, delete, func, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from .models import Account, AccountSubnet, AccountTargetState, Attempt, FoundIP, HunterTask, RegionState, SchedulerSettings, TargetSubnet, TaskStatus
-from app.config.regions import REGIONS
+from app.config.regions import REGION_ORDER, REGIONS
 
 
 def now():
@@ -88,8 +88,6 @@ class Repository:
             await s.execute(update(AccountSubnet).where(AccountSubnet.account_id == account_id).values(enabled=False))
             for item in selected:
                 item = {**item, "region": item.get("region", account.region)}
-                if item["region"] != account.region:
-                    raise ValueError("Подсеть принадлежит другому региону аккаунта")
                 existing = await s.scalar(select(AccountSubnet).where(and_(AccountSubnet.account_id == account_id, AccountSubnet.subnet_id == item["subnet_id"])))
                 if existing: existing.enabled = True; existing.cidr = item["cidr"]; existing.region = item["region"]
                 else: s.add(AccountSubnet(account_id=account_id, **item))
@@ -97,9 +95,7 @@ class Repository:
 
     async def enabled_subnets(self, account_id: int):
         async with self.sessions() as s:
-            account = await s.get(Account, account_id)
-            region = account.region if account else "ru-3"
-            return list((await s.scalars(select(AccountSubnet).where(AccountSubnet.account_id == account_id, AccountSubnet.enabled, AccountSubnet.region == region))).all())
+            return list((await s.scalars(select(AccountSubnet).where(AccountSubnet.account_id == account_id, AccountSubnet.enabled))).all())
 
     async def enabled_targets(self, account_id: int | None = None):
         async with self.sessions() as s:
@@ -137,6 +133,12 @@ class Repository:
         async with self.sessions() as s:
             await s.execute(update(RegionState).where(RegionState.region == region).values(enabled=enabled))
             await s.commit()
+
+    async def region_states(self):
+        async with self.sessions() as s:
+            states = list((await s.scalars(select(RegionState))).all())
+            order = {region: index for index, region in enumerate(REGION_ORDER)}
+            return sorted(states, key=lambda state: order.get(state.region, len(order)))
 
     async def disable_subnet(self, account_id: int, subnet_id: str):
         async with self.sessions() as s:

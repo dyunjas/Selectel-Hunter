@@ -1,4 +1,5 @@
 TARGET_SUBNETS = [
+    {"region": "ru-1", "cidr": "46.182.24.0/24", "subnet_id": "a47cd3be-6c09-4a72-a852-780d9cc07937"},
     {"region": "ru-3", "cidr": "87.228.101.0/24", "subnet_id": "53b0d1b5-a8f8-40aa-9c16-b2a60468c2ca"},
     {"region": "ru-3", "cidr": "188.68.218.0/24", "subnet_id": "c2578c6f-b81b-48b2-aa41-fc7e3b0be10d"},
     {"region": "ru-3", "cidr": "185.91.54.0/24", "subnet_id": "86ae307b-7aa8-437e-88c7-1f5332048bb2"},
