@@ -10,11 +10,11 @@ def region_picker(prefix="region"):
 
 def main_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Аккаунты", callback_data="account:list"), InlineKeyboardButton(text="▶️ Запустить", callback_data="hunt:start")],
-        [InlineKeyboardButton(text="📊 Scheduler", callback_data="scheduler:view"), InlineKeyboardButton(text="🎯 Цели", callback_data="targets:view")],
+        [InlineKeyboardButton(text="👤 Аккаунты", callback_data="account:list"), InlineKeyboardButton(text="🚀 Запустить все", callback_data="hunt:all")],
+        [InlineKeyboardButton(text="▶️ Запустить выборочно", callback_data="hunt:start")],
+        [InlineKeyboardButton(text="📊 Расписание", callback_data="scheduler:view"), InlineKeyboardButton(text="🎯 Подсети", callback_data="targets:view")],
         [InlineKeyboardButton(text="🌍 Регионы", callback_data="regions:view"), InlineKeyboardButton(text="✅ Найденные IP", callback_data="found:list")],
-        [InlineKeyboardButton(text="⚙️ Burst настройки", callback_data="scheduler:settings"), InlineKeyboardButton(text="📈 Статистика", callback_data="stats:view")],
-        [InlineKeyboardButton(text="ℹ️ Помощь", callback_data="help")],
+        [InlineKeyboardButton(text="⚙️ Настройки поиска", callback_data="scheduler:settings"), InlineKeyboardButton(text="📈 Статистика", callback_data="stats:view")],
     ])
 
 
@@ -69,11 +69,11 @@ def task_actions(task_id):
 def scheduler_settings(settings):
     stagger = settings.burst_cooldown
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"⚡ Запросы: {settings.burst_request_delay:g} сек", callback_data="burst:delay")],
-        [InlineKeyboardButton(text=f"🔄 Cooldown: {settings.burst_cooldown} сек", callback_data="burst:cooldown")],
-        [InlineKeyboardButton(text=f"🌐 API timeout: {settings.api_timeout:g} сек", callback_data="burst:timeout")],
-        [InlineKeyboardButton(text=f"⚠️ Лимит ошибок: {settings.errors_before_disable}", callback_data="burst:errors")],
-        [InlineKeyboardButton(text=f"👥 Auto stagger: {stagger} / active", callback_data="burst:noop")],
+        [InlineKeyboardButton(text=f"⚡ Пауза между запросами: {settings.burst_request_delay:g} сек", callback_data="burst:delay")],
+        [InlineKeyboardButton(text=f"🔄 Пауза между циклами: {settings.burst_cooldown} сек", callback_data="burst:cooldown")],
+        [InlineKeyboardButton(text=f"🌐 Тайм-аут API: {settings.api_timeout:g} сек", callback_data="burst:timeout")],
+        [InlineKeyboardButton(text=f"⚠️ Лимит критических ошибок: {settings.errors_before_disable}", callback_data="burst:errors")],
+        [InlineKeyboardButton(text=f"👥 Автораспределение аккаунтов: {stagger} сек", callback_data="burst:noop")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="home")],
     ])
 

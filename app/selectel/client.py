@@ -50,11 +50,20 @@ class SelectelClient:
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
             raise SelectelError(ErrorType.NETWORK_ERROR, "Selectel authentication network error") from exc
 
+    async def relogin(self):
+        """Discard the cached Keystone token and perform a fresh login."""
+        self.token = None
+        token = await self.authenticate()
+        log.info("Selectel re-authenticated account=%s", self.account.id)
+        return token
+
     async def _request(self, method: str, path: str, region: str | None = None, **kwargs) -> Any:
         await self.open()
         if not self.token: await self.authenticate()
-        headers = {"X-Auth-Token": self.token, "Content-Type": "application/json"}
         for attempt in range(2):
+            # Rebuild headers on every attempt. After a 401 the token is
+            # refreshed below and the retry must use the new token.
+            headers = {"X-Auth-Token": self.token, "Content-Type": "application/json"}
             if self.proxy and not self.socks_proxy: kwargs["proxy"] = self.proxy
             try:
                 endpoint = REGIONS.get(region or self.region, REGIONS.get(self.region, REGIONS["ru-3"]))["network_api_url"]
@@ -63,8 +72,7 @@ class SelectelClient:
                     if response.status == 401 and attempt == 0:
                         # После изменения IAM-ролей старый Keystone token может
                         # продолжать жить, поэтому один раз перевыпускаем его.
-                        self.token = None
-                        await self.authenticate()
+                        await self.relogin()
                         continue
                     if response.status >= 400:
                         retry = response.headers.get("Retry-After")

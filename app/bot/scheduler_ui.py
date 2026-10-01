@@ -7,6 +7,20 @@ from .keyboards import account_burst_settings, back, main_menu, region_settings,
 def build_scheduler_ui(repo, manager):
     router = Router()
 
+    @router.callback_query(F.data == "hunt:all")
+    async def start_all(call):
+        accounts = await repo.accounts(call.from_user.id)
+        if not accounts:
+            await call.answer("Сначала добавьте хотя бы один аккаунт", show_alert=True)
+            return
+        started, failed = await manager.start_all_accounts(call.from_user.id)
+        text = f"🚀 <b>Запуск завершён</b>\n\nАккаунтов запущено: <b>{started}</b>"
+        if failed:
+            text += f"\nНе удалось запустить: <b>{len(failed)}</b>"
+        text += "\n\nВсе аккаунты работают в общем burst-планировщике."
+        await call.message.edit_text(text, reply_markup=main_menu())
+        await call.answer("Все аккаунты запущены")
+
     async def settings_screen(call):
         settings = await repo.scheduler_settings()
         await call.message.edit_text(
@@ -122,6 +136,7 @@ def build_scheduler_ui(repo, manager):
 
     @router.callback_query(F.data == "stats:view")
     async def stats(call):
+        accounts = await repo.accounts(call.from_user.id)
         values = await repo.user_attempt_stats(call.from_user.id)
         total = sum(values.values())
         found = values.get("FOUND", 0)
@@ -129,14 +144,25 @@ def build_scheduler_ui(repo, manager):
         network = values.get("NETWORK_ERROR", 0)
         permission = values.get("PERMISSION_ERROR", 0) + values.get("AUTH_ERROR", 0)
         rate_limit = values.get("RATE_LIMIT", 0)
+        server = values.get("SERVER_ERROR", 0)
+        unknown = values.get("UNKNOWN", 0)
+        running = sum(account.scheduler_status == "RUNNING" for account in accounts)
+        paused = sum(account.scheduler_status == "PAUSED" for account in accounts)
+        blocked = sum(account.scheduler_status == "BLOCKED" for account in accounts)
         await call.message.edit_text(
-            "📈 <b>Статистика</b>\n\n"
-            f"Запросов: <b>{total}</b>\n"
-            f"✅ FOUND: <b>{found}</b>\n"
-            f"ℹ️ NO_FREE_IP: <b>{no_free}</b>\n"
+            "📈 <b>Статистика работы</b>\n\n"
+            f"👤 Всего аккаунтов: <b>{len(accounts)}</b>\n"
+            f"🟢 Активных: <b>{running}</b>\n"
+            f"⏸ На паузе: <b>{paused}</b>\n"
+            f"⛔ Заблокировано: <b>{blocked}</b>\n\n"
+            f"🔄 Всего запросов: <b>{total}</b>\n"
+            f"✅ Найдено IP: <b>{found}</b>\n"
+            f"ℹ️ Нет свободных IP: <b>{no_free}</b>\n"
             f"🌐 Сетевые ошибки: <b>{network}</b>\n"
-            f"⛔ 403 / авторизация: <b>{permission}</b>\n"
-            f"⏱ 429: <b>{rate_limit}</b>",
+            f"🔐 Ошибки доступа: <b>{permission}</b>\n"
+            f"⏱ Ограничения API: <b>{rate_limit}</b>\n"
+            f"🖥 Ошибки сервера: <b>{server}</b>\n"
+            f"❓ Другие ошибки: <b>{unknown}</b>",
             reply_markup=back(),
         )
         await call.answer()

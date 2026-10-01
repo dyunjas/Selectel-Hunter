@@ -156,6 +156,19 @@ class BurstSchedulerManager:
         await self.start_account(account.id)
         return account
 
+    async def start_all_accounts(self, user_id):
+        """Start every account owned by the user without one failure blocking the rest."""
+        started = 0
+        failed = []
+        for account in await self.repo.accounts(user_id):
+            try:
+                await self.start_account(account.id)
+                started += 1
+            except Exception as exc:
+                failed.append((account.display_name, str(exc)))
+                log.exception("failed to start account account_id=%s", account.id)
+        return started, failed
+
     async def start_task(self, task):
         return await self.start_account(task.account_id)
 
