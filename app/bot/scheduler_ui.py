@@ -170,23 +170,37 @@ def build_scheduler_ui(repo, manager):
     @router.callback_query(F.data == "scheduler:view")
     async def schedule(call):
         settings = await repo.scheduler_settings()
-        accounts = await manager.get_schedule(call.from_user.id)
-        stagger = settings.burst_cooldown / len(accounts) if accounts else 0
-        active = sum(account.scheduler_status == "RUNNING" for account in accounts)
-        waiting = sum(account.scheduler_status in {"RATE_LIMIT_COOLDOWN", "IDLE"} for account in accounts)
+        snapshot = await manager.get_scheduler_snapshot(call.from_user.id)
+        queue = snapshot["queue"]
+        accounts = [item["account"] for item in queue]
+        active = sum(account.scheduler_status in {"RUNNING", "RATE_LIMIT_COOLDOWN"} for account in accounts)
+        waiting = sum(account.scheduler_status in {"RATE_LIMIT_COOLDOWN", "IDLE", "PAUSED"} for account in accounts)
+        current_id = snapshot["current_account_id"]
+        current = next((account for account in accounts if account.id == current_id), None)
         lines = [
-            "📊 <b>Планировщик аккаунтов</b>",
+            "📋 <b>Глобальная очередь BURST</b>",
             f"Активных аккаунтов: <b>{active}</b>",
-            f"Всего в расписании: <b>{len(accounts)}</b>",
-            f"Период полного обхода: <b>{settings.burst_cooldown} сек</b>",
-            f"Интервал между аккаунтами: <b>{stagger:g} сек</b>",
-            f"Ожидают запуска или cooldown: <b>{waiting}</b>",
+            f"В очереди: <b>{len(accounts)}</b>",
+            f"Обязательный cooldown: <b>{settings.burst_cooldown} сек</b>",
+            "Один BURST выполняется до конца — следующий стартует только после него.",
             "",
-            "<b>Ближайшие слоты:</b>",
+            f"▶️ Сейчас выполняется: <b>{current.display_name if current else 'нет'}</b>",
+            f"⏳ Ожидают или на cooldown: <b>{waiting}</b>",
+            "",
+            "<b>Порядок очереди:</b>",
         ]
-        for account in accounts:
-            planned = account.next_cycle_at.strftime("%d.%m %H:%M:%S UTC") if account.next_cycle_at else "не запланирован"
-            lines.append(f"👤 {account.display_name} · {account.scheduler_status} · {planned}")
+        for position, item in enumerate(queue, 1):
+            account = item["account"]
+            planned = account.next_cycle_at.strftime("%d.%m %H:%M:%S UTC") if account.next_cycle_at else "сразу после освобождения очереди"
+            duration = "—"
+            if account.last_cycle_started_at and account.last_cycle_finished_at:
+                duration = f"{(account.last_cycle_finished_at - account.last_cycle_started_at).total_seconds():.1f} сек"
+            marker = "▶️" if account.id == current_id else f"{position}."
+            lines.append(
+                f"{marker} <b>{account.display_name}</b> · {account.scheduler_status}\n"
+                f"   запуск: <b>{planned}</b> · последний BURST: <b>{duration}</b>\n"
+                f"   причина ожидания: {item['reason']}"
+            )
         await call.message.edit_text("\n".join(lines), reply_markup=back())
         await call.answer()
 

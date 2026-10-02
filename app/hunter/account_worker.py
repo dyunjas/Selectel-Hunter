@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from app.db.models import TaskStatus
@@ -11,16 +11,14 @@ log = logging.getLogger(__name__)
 
 
 def utcnow():
-    return datetime.utcnow()
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def next_scheduled_cycle(planned_start, finished_at, period_seconds, scheduled=None):
-    """Return the next UTC slot without accumulating burst execution time."""
+    """Return a slot after the real finish time and mandatory cooldown."""
     period = timedelta(seconds=max(1, int(period_seconds or 1)))
-    candidate = scheduled if scheduled and scheduled > finished_at else planned_start + period
-    while candidate <= finished_at:
-        candidate += period
-    return candidate
+    minimum = finished_at + period
+    return max(scheduled or minimum, minimum)
 
 
 class AccountBurstWorker:
@@ -165,36 +163,36 @@ class AccountBurstWorker:
                 await asyncio.sleep(max(0.0, delay))
         return "finished"
 
+    async def run_once(self):
+        """Execute exactly one BURST.
+
+        The global scheduler owns the loop and the durable next-cycle state;
+        this method intentionally never sleeps until the next BURST.
+        """
+        account = await self.repo.get_account(self.account_id)
+        if not account or not account.enabled or account.scheduler_status != "RUNNING":
+            return "stop"
+        self.cycle_id += 1
+        cycle_started = utcnow()
+        deviation = (cycle_started - account.next_cycle_at).total_seconds() if account.next_cycle_at else 0.0
+        await self._state(last_cycle_started_at=cycle_started, schedule_deviation_seconds=deviation)
+        return await self._run_burst(account)
+
     async def run(self):
         if self.initial_delay:
             await asyncio.sleep(self.initial_delay)
         while True:
-            account = await self.repo.get_account(self.account_id)
-            if not account or not account.enabled or account.scheduler_status != "RUNNING":
-                return
-            if account.next_cycle_at and account.next_cycle_at > utcnow():
-                await self._wait(account.next_cycle_at)
-                continue
-            if account.scheduler_status == "RATE_LIMIT_COOLDOWN":
-                await self._state(scheduler_status="RUNNING", cooldown_until=None)
-                await self._recalculate(reset=False)
-                account = await self.repo.get_account(self.account_id)
-            self.cycle_id += 1
-            cycle_started = utcnow()
-            deviation = (cycle_started - account.next_cycle_at).total_seconds() if account.next_cycle_at else 0.0
-            await self._state(last_cycle_started_at=cycle_started, schedule_deviation_seconds=deviation)
-            result = await self._run_burst(account)
+            result = await self.run_once()
             if result == "stop":
                 return
             if result == "cooldown":
+                await asyncio.sleep(0)
                 continue
             finished = utcnow()
             scheduler_settings = await self.repo.scheduler_settings()
-            # A manager recalculation may have assigned a new pool slot while
-            # this burst was running. Preserve that slot; otherwise continue
-            # with the account's normal full-pool period.
             scheduled = await self.repo.get_account(self.account_id)
-            planned_start = account.next_cycle_at if account.next_cycle_at else cycle_started
+            account = scheduled
+            planned_start = account.next_cycle_at if account and account.next_cycle_at else finished
             next_cycle = next_scheduled_cycle(
                 planned_start,
                 finished,
@@ -202,7 +200,8 @@ class AccountBurstWorker:
                 scheduled.next_cycle_at if scheduled else None,
             )
             await self._state(last_cycle_finished_at=finished, next_cycle_at=next_cycle)
-            log.info("account=%s cycle=%s finished next_cycle=%s", account.id, self.cycle_id, next_cycle.isoformat())
+            log.info("account=%s cycle=%s finished next_cycle=%s", self.account_id, self.cycle_id, next_cycle.isoformat())
+            await self._wait(next_cycle)
 
 
 AccountWorker = AccountBurstWorker
