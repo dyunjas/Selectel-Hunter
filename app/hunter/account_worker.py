@@ -14,6 +14,15 @@ def utcnow():
     return datetime.utcnow()
 
 
+def next_scheduled_cycle(planned_start, finished_at, period_seconds, scheduled=None):
+    """Return the next UTC slot without accumulating burst execution time."""
+    period = timedelta(seconds=max(1, int(period_seconds or 1)))
+    candidate = scheduled if scheduled and scheduled > finished_at else planned_start + period
+    while candidate <= finished_at:
+        candidate += period
+    return candidate
+
+
 class AccountBurstWorker:
     """Executes one account burst sequentially, then waits for its cooldown."""
 
@@ -31,9 +40,9 @@ class AccountBurstWorker:
     async def _state(self, **values):
         await self.repo.update_account(self.account_id, **values)
 
-    async def _recalculate(self):
+    async def _recalculate(self, reset=True):
         if self.on_schedule_change:
-            await self.on_schedule_change()
+            await self.on_schedule_change(reset=reset)
 
     async def _wait(self, when):
         if when:
@@ -96,14 +105,14 @@ class AccountBurstWorker:
             return "continue"
         if kind in (ErrorType.PERMISSION_ERROR.value, ErrorType.AUTH_ERROR.value):
             await self._state(scheduler_status="BLOCKED", next_cycle_at=None, cooldown_until=None)
-            await self._recalculate()
+            await self._recalculate(reset=True)
             await self._notify(account, subnet, f"{kind}: HTTP {exc.status or '—'}: {exc}")
             return "stop"
         if kind == ErrorType.RATE_LIMIT.value:
             delay = exc.retry_after or 300
             until = now + timedelta(seconds=float(delay))
             await self._state(scheduler_status="RATE_LIMIT_COOLDOWN", cooldown_until=until, next_cycle_at=until)
-            await self._recalculate()
+            await self._recalculate(reset=False)
             await self._notify(account, subnet, f"RATE_LIMIT: HTTP 429: cooldown {int(delay)} сек. — {exc}")
             return "cooldown"
         if kind == ErrorType.NETWORK_ERROR.value:
@@ -168,11 +177,12 @@ class AccountBurstWorker:
                 continue
             if account.scheduler_status == "RATE_LIMIT_COOLDOWN":
                 await self._state(scheduler_status="RUNNING", cooldown_until=None)
-                await self._recalculate()
+                await self._recalculate(reset=False)
                 account = await self.repo.get_account(self.account_id)
             self.cycle_id += 1
             cycle_started = utcnow()
-            await self._state(last_cycle_started_at=cycle_started)
+            deviation = (cycle_started - account.next_cycle_at).total_seconds() if account.next_cycle_at else 0.0
+            await self._state(last_cycle_started_at=cycle_started, schedule_deviation_seconds=deviation)
             result = await self._run_burst(account)
             if result == "stop":
                 return
@@ -184,8 +194,12 @@ class AccountBurstWorker:
             # this burst was running. Preserve that slot; otherwise continue
             # with the account's normal full-pool period.
             scheduled = await self.repo.get_account(self.account_id)
-            next_cycle = scheduled.next_cycle_at if scheduled and scheduled.next_cycle_at and scheduled.next_cycle_at > finished else (
-                cycle_started + timedelta(seconds=max(0, int(scheduler_settings.burst_cooldown or 360)))
+            planned_start = account.next_cycle_at if account.next_cycle_at else cycle_started
+            next_cycle = next_scheduled_cycle(
+                planned_start,
+                finished,
+                scheduler_settings.burst_cooldown or 360,
+                scheduled.next_cycle_at if scheduled else None,
             )
             await self._state(last_cycle_finished_at=finished, next_cycle_at=next_cycle)
             log.info("account=%s cycle=%s finished next_cycle=%s", account.id, self.cycle_id, next_cycle.isoformat())

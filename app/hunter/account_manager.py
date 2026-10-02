@@ -33,7 +33,7 @@ class BurstSchedulerManager:
     def _active(account):
         return account.enabled and account.scheduler_status in ("RUNNING", "IDLE") and (account.auto_start or account.scheduler_status == "RUNNING")
 
-    async def recalculate_schedule(self):
+    async def recalculate_schedule(self, reset=True):
         accounts = await self.repo.all_accounts()
         settings = await self.repo.scheduler_settings()
         active = [a for a in accounts if self._active(a)]
@@ -45,16 +45,23 @@ class BurstSchedulerManager:
         pool_period = float(settings.burst_cooldown or self.default_cooldown)
         auto_spacing = calculate_stagger(pool_period, total) if total else self.stagger_seconds
         schedule_started = datetime.utcnow()
+        entries = []
         for position, account in enumerate(active):
             stagger = account.manual_stagger if not account.auto_stagger and account.manual_stagger is not None else (
                 auto_spacing if settings.auto_stagger and total else self.stagger_seconds
             )
-            next_cycle = schedule_started + timedelta(seconds=position * stagger)
-            await self.repo.update_account(account.id, scheduler_position=position, next_cycle_at=next_cycle)
+            previous = account.next_cycle_at
+            if not reset and previous and previous > schedule_started:
+                next_cycle = previous
+            else:
+                next_cycle = schedule_started + timedelta(seconds=position * stagger)
+            entries.append((account.id, {"scheduler_position": position, "next_cycle_at": next_cycle}))
+        if entries:
+            await self.repo.apply_schedule(entries)
         spacing = auto_spacing if settings.auto_stagger and total else self.stagger_seconds
         return [(a.id, i * spacing) for i, a in enumerate(active)]
 
-    async def start_account(self, account_id, initial_delay=0):
+    async def start_account(self, account_id, initial_delay=0, reschedule=True):
         async with self._start_guard:
             current = self.account_workers.get(account_id)
             if current and not current.done():
@@ -65,7 +72,8 @@ class BurstSchedulerManager:
             await self.repo.update_account(account_id, scheduler_status="RUNNING")
             # Include the newly activated account in the pool before starting
             # its worker. This keeps all accounts on the same live schedule.
-            await self.recalculate_schedule()
+            if reschedule:
+                await self.recalculate_schedule(reset=True)
             scheduled = await self.repo.get_account(account_id)
             if scheduled and scheduled.next_cycle_at:
                 initial_delay = max(0.0, (scheduled.next_cycle_at - datetime.utcnow()).total_seconds())
@@ -84,17 +92,15 @@ class BurstSchedulerManager:
 
     async def start(self):
         accounts = await self.repo.all_accounts()
-        settings = await self.repo.scheduler_settings()
         active = [a for a in accounts if self._active(a)]
         active.sort(key=lambda a: (a.scheduler_position, a.id))
-        total = len(active)
         for position, account in enumerate(active):
             await self.repo.update_account(account.id, scheduler_status="RUNNING", scheduler_position=position)
-        await self.recalculate_schedule()
+        await self.recalculate_schedule(reset=False)
         for account in active:
             scheduled = await self.repo.get_account(account.id)
             delay = max(0.0, (scheduled.next_cycle_at - datetime.utcnow()).total_seconds()) if scheduled and scheduled.next_cycle_at else 0
-            await self.start_account(account.id, delay)
+            await self.start_account(account.id, delay, reschedule=False)
 
     async def restore(self):
         return await self.start()

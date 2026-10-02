@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from aiogram import BaseMiddleware, F, Router
 from aiogram.filters import Command, CommandStart
@@ -7,7 +8,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 from app.config.subnets import BY_ID, TARGET_SUBNETS
 from app.config.regions import REGIONS
-from .keyboards import account_actions, accounts, back, delete_confirmation, hunt_accounts, main_menu, notification_settings, region_picker, subnets, task_actions, task_list as task_list_keyboard
+from .keyboards import account_actions, account_stats_periods, accounts, back, delete_confirmation, hunt_accounts, main_menu, notification_settings, region_picker, subnets, task_actions, task_list as task_list_keyboard
 
 back_menu = back
 
@@ -112,7 +113,8 @@ def build_router(repo, manager, secret_box, client_factory, admin_ids=None, bot=
                 if chat.is_forum is False: raise RuntimeError("в супергруппе выключены Topics")
                 topic = await bot.create_forum_topic(chat_id=notification_chat_id, name=account.display_name)
                 await repo.update_account(account.id, topic_chat_id=notification_chat_id, topic_thread_id=topic.message_thread_id)
-                if account.notify_account_added:
+                notification_options = await repo.notification_settings()
+                if account.notifications_enabled and notification_options.enabled and account.notify_account_added:
                     await bot.send_message(notification_chat_id, f"✅ Аккаунт добавлен\n{account.display_name}\nBurst-планировщик активирован.", message_thread_id=topic.message_thread_id)
                 topic_ok = True
             except Exception as exc:
@@ -128,8 +130,67 @@ def build_router(repo, manager, secret_box, client_factory, admin_ids=None, bot=
     async def account_view(call):
         account = await repo.get_account(int(call.data.rsplit(":", 1)[1]))
         if not account or account.telegram_user_id != call.from_user.id: await call.answer("Аккаунт не найден", show_alert=True); return
-        nets = await repo.enabled_subnets(account.id); tasks = [t for t in await repo.user_tasks(call.from_user.id) if t.account_id == account.id and t.status == "RUNNING"]
-        await call.message.edit_text(f"👤 <b>{account.display_name}</b>\n\nСтатус: <b>{account.scheduler_status}</b>\nProxy: {'✅ включён' if account.encrypted_proxy_url else '❌ нет'}\nTargets: глобальный список\nАктивных задач: {len(tasks)}", reply_markup=account_actions(account.id, bool(account.topic_thread_id))); await call.answer()
+        stats = await repo.account_attempt_stats(account.id)
+        targets = await repo.enabled_targets(account.id)
+        next_burst = account.next_cycle_at.strftime("%d.%m %H:%M:%S UTC") if account.next_cycle_at else "не запланирован"
+        await call.message.edit_text(
+            f"👤 <b>{account.display_name}</b>\n\n"
+            f"Статус: <b>{account.scheduler_status}</b>\n"
+            f"Следующий burst: <b>{next_burst}</b>\n"
+            f"Отклонение прошлого запуска: <b>{account.schedule_deviation_seconds:+.1f} сек</b>\n"
+            f"Прокси: <b>{'✅ подключён' if account.encrypted_proxy_url else '❌ не настроен'}</b>\n"
+            f"Целей в очереди: <b>{len(targets)}</b>\n\n"
+            "<b>Краткая статистика</b>\n"
+            f"Запросов: <b>{sum(stats.values())}</b>\n"
+            f"Найдено IP: <b>{stats.get('FOUND', 0)}</b>\n"
+            f"Ошибок сети: <b>{stats.get('NETWORK_ERROR', 0)}</b>\n"
+            f"Нет свободных IP: <b>{stats.get('NO_FREE_IP', 0)}</b>",
+            reply_markup=account_actions(account.id, bool(account.topic_thread_id)),
+        )
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("account:check:"))
+    async def account_check(call):
+        account = await repo.get_account(int(call.data.rsplit(":", 1)[1]))
+        if not account or account.telegram_user_id != call.from_user.id:
+            await call.answer("Аккаунт не найден", show_alert=True)
+            return
+        await call.answer("Проверяю подключение…")
+        try:
+            client = await client_factory(account.id)
+            await client.validate_account()
+            result = "✅ Подключение работает. Авторизация и API доступны."
+        except Exception as exc:
+            result = f"❌ Проверка не пройдена.\n\n<code>{type(exc).__name__}: {exc}</code>"
+        await call.message.edit_text(
+            f"🌐 <b>Проверка подключения</b>\n\nАккаунт: <b>{account.display_name}</b>\n\n{result}",
+            reply_markup=account_actions(account.id, bool(account.topic_thread_id)),
+        )
+
+    @router.callback_query(F.data.startswith("account:stats:"))
+    async def account_stats(call):
+        parts = call.data.split(":")
+        account = await repo.get_account(int(parts[2]))
+        if not account or account.telegram_user_id != call.from_user.id:
+            await call.answer("Аккаунт не найден", show_alert=True)
+            return
+        period = parts[3] if len(parts) > 3 else "all"
+        since = {"1h": datetime.utcnow() - timedelta(hours=1), "24h": datetime.utcnow() - timedelta(days=1), "7d": datetime.utcnow() - timedelta(days=7)}.get(period)
+        values = await repo.account_statistics(account.id, since)
+        by_result = values["by_result"]
+        await call.message.edit_text(
+            f"📈 <b>Статистика аккаунта</b>\n\n"
+            f"👤 {account.display_name}\n"
+            f"Запросов: <b>{values['total']}</b>\n"
+            f"Найдено IP: <b>{by_result.get('FOUND', {}).get('count', 0)}</b>\n"
+            f"Нет свободных IP: <b>{by_result.get('NO_FREE_IP', {}).get('count', 0)}</b>\n"
+            f"Сетевые ошибки: <b>{by_result.get('NETWORK_ERROR', {}).get('count', 0)}</b>\n"
+            f"Ошибки доступа: <b>{by_result.get('PERMISSION_ERROR', {}).get('count', 0) + by_result.get('AUTH_ERROR', {}).get('count', 0)}</b>\n"
+            f"Ограничения API: <b>{by_result.get('RATE_LIMIT', {}).get('count', 0)}</b>\n"
+            f"Средний ответ API: <b>{values['average_ms'] / 1000:.2f} сек.</b>",
+            reply_markup=account_stats_periods(account.id, period),
+        )
+        await call.answer()
     @router.callback_query(F.data.startswith("account:hunt:"))
     async def account_hunt(call):
         account_id = int(call.data.rsplit(":", 1)[1]); account = await repo.get_account(account_id)
@@ -201,6 +262,15 @@ def build_router(repo, manager, secret_box, client_factory, admin_ids=None, bot=
         _, _, account_id, field = call.data.split(":", 3); account = await repo.toggle_account_notification(int(account_id), field)
         if not account or account.telegram_user_id != call.from_user.id: await call.answer("Аккаунт не найден", show_alert=True); return
         await call.message.edit_reply_markup(reply_markup=notification_settings(account)); await call.answer("Настройка обновлена")
+
+    @router.callback_query(F.data.startswith("notify:master:"))
+    async def notification_master(call):
+        account = await repo.toggle_account_notifications(int(call.data.rsplit(":", 1)[1]))
+        if not account or account.telegram_user_id != call.from_user.id:
+            await call.answer("Аккаунт не найден", show_alert=True)
+            return
+        await call.message.edit_reply_markup(reply_markup=notification_settings(account))
+        await call.answer("Все уведомления обновлены")
     @router.callback_query(F.data.startswith("account:topic:"))
     async def account_topic(call):
         account = await repo.get_account(int(call.data.rsplit(":", 1)[1]))

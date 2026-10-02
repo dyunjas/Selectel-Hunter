@@ -15,6 +15,7 @@ def main_menu():
         [InlineKeyboardButton(text="📊 Расписание", callback_data="scheduler:view"), InlineKeyboardButton(text="🎯 Подсети", callback_data="targets:view")],
         [InlineKeyboardButton(text="🌍 Регионы", callback_data="regions:view"), InlineKeyboardButton(text="✅ Найденные IP", callback_data="found:list")],
         [InlineKeyboardButton(text="⚙️ Настройки поиска", callback_data="scheduler:settings"), InlineKeyboardButton(text="📈 Статистика", callback_data="stats:view")],
+        [InlineKeyboardButton(text="🔔 Уведомления", callback_data="notifications:global")],
     ])
 
 
@@ -101,3 +102,71 @@ def region_picker(prefix="region"):
         [InlineKeyboardButton(text="🌍 ru-1", callback_data=f"{prefix}:ru-1"), InlineKeyboardButton(text="🌍 ru-3", callback_data=f"{prefix}:ru-3"), InlineKeyboardButton(text="🌍 ru-9", callback_data=f"{prefix}:ru-9")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="home")],
     ])
+
+
+def notification_settings(account):
+    def mark(value):
+        return "✅" if value else "▫️"
+
+    fields = [
+        ("notify_account_added", "Добавление аккаунта"),
+        ("notify_found", "Найден IP"),
+        ("notify_no_free_ip", "Нет свободного IP"),
+        ("notify_permission", "Доступ и авторизация"),
+        ("notify_network", "Сетевые ошибки"),
+        ("notify_rate_limit", "Ограничения API"),
+        ("notify_server", "Ошибки сервера"),
+        ("notify_unknown", "Другие ошибки"),
+        ("notify_recovered", "Аккаунт восстановлен"),
+        ("notify_scheduler", "Изменения расписания"),
+    ]
+    rows = [[InlineKeyboardButton(text=f"{'✅' if account.notifications_enabled else '▫️'} Все уведомления", callback_data=f"notify:master:{account.id}")]]
+    rows += [[InlineKeyboardButton(text=f"{mark(getattr(account, field))} {label}", callback_data=f"notify:toggle:{account.id}:{field}")] for field, label in fields]
+    rows.append([InlineKeyboardButton(text="🔙 К аккаунту", callback_data=f"account:view:{account.id}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def global_notification_settings(settings):
+    mark = "✅" if settings.enabled else "▫️"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"{mark} Все уведомления", callback_data="notify:global:toggle")],
+        [InlineKeyboardButton(text=f"🧹 Объединять повторы: {settings.aggregate_seconds} сек", callback_data="notify:global:aggregate")],
+        [InlineKeyboardButton(text=f"📊 Отчёты: {settings.report_period}", callback_data="notify:global:reports")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="home")],
+    ])
+
+
+def account_settings_keyboard(account):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🌐 Настроить прокси", callback_data=f"account:proxy:{account.id}")],
+        [InlineKeyboardButton(text="🔔 Уведомления", callback_data=f"account:notifications:{account.id}")],
+        [InlineKeyboardButton(text="📈 Статистика аккаунта", callback_data=f"account:stats:{account.id}")],
+        [InlineKeyboardButton(text="🌐 Проверить подключение", callback_data=f"account:check:{account.id}")],
+        [InlineKeyboardButton(text="⏸ Приостановить", callback_data=f"account:pause:{account.id}"), InlineKeyboardButton(text="▶️ Возобновить", callback_data=f"account:resume:{account.id}")],
+        [InlineKeyboardButton(text="🗑 Удалить аккаунт", callback_data=f"account:delete:{account.id}")],
+        [InlineKeyboardButton(text="🔙 К списку аккаунтов", callback_data="account:list")],
+    ])
+
+
+def account_stats_periods(account_id, selected="all"):
+    labels = [("1h", "1 час"), ("24h", "24 часа"), ("7d", "7 дней"), ("all", "Всё время")]
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=("✅ " if value == selected else "") + label, callback_data=f"account:stats:{account_id}:{value}") for value, label in labels],
+        [InlineKeyboardButton(text="🔙 К аккаунту", callback_data=f"account:view:{account_id}")],
+    ])
+
+
+# Final account card layout used by all navigation paths.
+def account_actions(account_id, has_topic=False):
+    rows = [
+        [InlineKeyboardButton(text="▶️ Запустить / выбрать цели", callback_data=f"account:hunt:{account_id}")],
+        [InlineKeyboardButton(text="⚙️ Настройки аккаунта", callback_data=f"account:settings:{account_id}")],
+        [InlineKeyboardButton(text="📈 Статистика", callback_data=f"account:stats:{account_id}")],
+        [InlineKeyboardButton(text="🌐 Проверить подключение", callback_data=f"account:check:{account_id}")],
+        [InlineKeyboardButton(text="⏸ Приостановить", callback_data=f"account:pause:{account_id}"), InlineKeyboardButton(text="▶️ Возобновить", callback_data=f"account:resume:{account_id}")],
+        [InlineKeyboardButton(text="🔔 Уведомления", callback_data=f"account:notifications:{account_id}")],
+    ]
+    if not has_topic:
+        rows.append([InlineKeyboardButton(text="🧵 Создать тему уведомлений", callback_data=f"account:topic:{account_id}")])
+    rows += [[InlineKeyboardButton(text="🗑 Удалить аккаунт", callback_data=f"account:delete:{account_id}")], [InlineKeyboardButton(text="🔙 К списку аккаунтов", callback_data="account:list")]]
+    return InlineKeyboardMarkup(inline_keyboard=rows)

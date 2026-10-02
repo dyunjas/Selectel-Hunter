@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from sqlalchemy import and_, delete, func, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
-from .models import Account, AccountSubnet, AccountTargetState, Attempt, FoundIP, HunterTask, RegionState, SchedulerSettings, TargetSubnet, TaskStatus
+from .models import Account, AccountSubnet, AccountTargetState, Attempt, FoundIP, HunterTask, NotificationSettings, RegionState, SchedulerSettings, TargetSubnet, TaskStatus
 from app.config.regions import REGION_ORDER, REGIONS
 
 
@@ -51,6 +51,11 @@ class Repository:
     async def accounts(self, user_id: int):
         async with self.sessions() as s: return list((await s.scalars(select(Account).where(Account.telegram_user_id == user_id, Account.enabled))).all())
 
+    async def notification_users(self):
+        async with self.sessions() as s:
+            rows = await s.execute(select(Account.telegram_user_id).where(Account.enabled).distinct())
+            return [row[0] for row in rows.all()]
+
     async def all_accounts(self):
         async with self.sessions() as s: return list((await s.scalars(select(Account).where(Account.enabled))).all())
 
@@ -61,13 +66,48 @@ class Repository:
         async with self.sessions() as s:
             await s.execute(update(Account).where(Account.id == account_id).values(**values)); await s.commit()
 
+    async def apply_schedule(self, entries):
+        """Persist a complete schedule atomically in UTC database time."""
+        async with self.sessions() as s:
+            for account_id, values in entries:
+                await s.execute(update(Account).where(Account.id == account_id).values(**values))
+            await s.commit()
+
     async def toggle_account_notification(self, account_id: int, field: str):
-        allowed = {"notify_account_added", "notify_found", "notify_no_free_ip", "notify_permission", "notify_network", "notify_rate_limit", "notify_server", "notify_unknown"}
+        allowed = {"notify_account_added", "notify_found", "notify_no_free_ip", "notify_permission", "notify_network", "notify_rate_limit", "notify_server", "notify_unknown", "notify_recovered", "notify_scheduler"}
         if field not in allowed: raise ValueError("Unknown notification setting")
         async with self.sessions() as s:
             account = await s.get(Account, account_id)
             if not account: return None
             setattr(account, field, not getattr(account, field)); await s.commit(); await s.refresh(account); return account
+
+    async def toggle_account_notifications(self, account_id: int):
+        async with self.sessions() as s:
+            account = await s.get(Account, account_id)
+            if not account:
+                return None
+            account.notifications_enabled = not account.notifications_enabled
+            await s.commit(); await s.refresh(account)
+            return account
+
+    async def notification_settings(self):
+        async with self.sessions() as s:
+            settings = await s.get(NotificationSettings, 1)
+            if not settings:
+                settings = NotificationSettings(id=1)
+                s.add(settings); await s.commit(); await s.refresh(settings)
+            return settings
+
+    async def update_notification_settings(self, **values):
+        async with self.sessions() as s:
+            settings = await s.get(NotificationSettings, 1)
+            if not settings:
+                settings = NotificationSettings(id=1); s.add(settings)
+            for key, value in values.items():
+                if hasattr(settings, key):
+                    setattr(settings, key, value)
+            await s.commit(); await s.refresh(settings)
+            return settings
 
     async def delete_account(self, account_id: int):
         async with self.sessions() as s:
@@ -161,6 +201,17 @@ class Repository:
                 key = str(result)
                 stats[key] = stats.get(key, 0) + 1
             return stats
+
+    async def account_statistics(self, account_id: int, since=None):
+        async with self.sessions() as s:
+            query = select(Attempt.result, func.count(Attempt.id), func.avg(Attempt.elapsed_ms)).where(Attempt.account_id == account_id)
+            if since is not None:
+                query = query.where(Attempt.attempted_at >= since)
+            rows = await s.execute(query.group_by(Attempt.result))
+            values = {str(result): {"count": count, "avg_ms": float(avg or 0)} for result, count, avg in rows.all()}
+            total = sum(item["count"] for item in values.values())
+            average = sum(item["avg_ms"] * item["count"] for item in values.values()) / total if total else 0
+            return {"total": total, "average_ms": average, "by_result": values}
 
     async def user_attempt_stats(self, user_id: int):
         async with self.sessions() as s:

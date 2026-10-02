@@ -37,6 +37,7 @@ class Account(Base):
     topic_chat_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     topic_thread_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     notify_account_added: Mapped[bool] = mapped_column(Boolean, default=True)
+    notifications_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     notify_errors: Mapped[bool] = mapped_column(Boolean, default=True)
     notify_found: Mapped[bool] = mapped_column(Boolean, default=True)
     notify_no_free_ip: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -45,6 +46,8 @@ class Account(Base):
     notify_rate_limit: Mapped[bool] = mapped_column(Boolean, default=True)
     notify_server: Mapped[bool] = mapped_column(Boolean, default=True)
     notify_unknown: Mapped[bool] = mapped_column(Boolean, default=True)
+    notify_recovered: Mapped[bool] = mapped_column(Boolean, default=True)
+    notify_scheduler: Mapped[bool] = mapped_column(Boolean, default=False)
     scheduler_status: Mapped[str] = mapped_column(String(30), default="IDLE", index=True)
     current_subnet_index: Mapped[int] = mapped_column(Integer, default=0)
     last_request_at: Mapped[datetime | None] = mapped_column(DateTime)
@@ -55,6 +58,7 @@ class Account(Base):
     last_cycle_started_at: Mapped[datetime | None] = mapped_column(DateTime)
     last_cycle_finished_at: Mapped[datetime | None] = mapped_column(DateTime)
     next_cycle_at: Mapped[datetime | None] = mapped_column(DateTime)
+    schedule_deviation_seconds: Mapped[float] = mapped_column(Float, default=0.0)
     burst_subnet_delay: Mapped[float] = mapped_column(Float, default=0.3)
     account_cooldown: Mapped[int] = mapped_column(Integer, default=360)
     auto_stagger: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -112,6 +116,15 @@ class SchedulerSettings(Base):
     api_timeout: Mapped[float] = mapped_column(Float, default=5.0)
     errors_before_disable: Mapped[int] = mapped_column(Integer, default=30)
     auto_stagger: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class NotificationSettings(Base):
+    __tablename__ = "notification_settings"
+    id: Mapped[int] = mapped_column(primary_key=True, default=1)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    report_period: Mapped[str] = mapped_column(String(20), default="off")
+    aggregate_seconds: Mapped[int] = mapped_column(Integer, default=60)
+    last_report_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class HunterTask(Base):

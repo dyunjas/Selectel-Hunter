@@ -1,17 +1,14 @@
 import asyncio
 import logging
-import time
+from datetime import datetime, timedelta
 
 from aiogram import Bot, Dispatcher
-from aiogram.exceptions import TelegramRetryAfter
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
 from app.bot import build_router
 from app.bot.multisubnet import build_multisubnet_router
 from app.bot.scheduler_ui import build_scheduler_ui
-from app.bot.formatting import error_message, found_message
 from app.config import settings
 from app.config.regions import REGIONS
 from app.db.database import Database
@@ -20,6 +17,7 @@ from app.hunter.account_manager import AccountSchedulerManager
 from app.selectel.client import SelectelClient
 from app.services.crypto import SecretBox
 from app.services.logger import configure_logging
+from app.services.notifications import NotificationService
 
 
 log = logging.getLogger(__name__)
@@ -34,7 +32,8 @@ async def main():
     repo = Repository(db.sessions)
     box = SecretBox(settings.encryption_key)
     clients = {}
-    notification_last_sent = {}
+    bot = Bot(settings.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    notification_service = NotificationService(bot, repo)
 
     async def client_factory(account_id):
         account = await repo.get_account(account_id)
@@ -53,48 +52,38 @@ async def main():
         clients[account_id] = (fingerprint, client)
         return client
 
-    async def notify(task, ip, fip_id, elapsed, event):
-        account = await repo.get_account(task.account_id)
-        if account:
-            kind = "FOUND" if event == "FOUND" else str(event).split(":", 1)[0]
-            preference = {"FOUND": "notify_found", "NO_FREE_IP": "notify_no_free_ip", "PERMISSION_ERROR": "notify_permission", "NETWORK_ERROR": "notify_network", "RATE_LIMIT": "notify_rate_limit", "SERVER_ERROR": "notify_server", "AUTH_ERROR": "notify_permission", "UNKNOWN": "notify_unknown"}.get(kind, "notify_unknown")
-            if not getattr(account, preference, True): return
-            # NO_FREE_IP is a normal polling result. Do not flood the topic
-            # with the same message on every burst attempt.
-            if kind == "NO_FREE_IP":
-                key = (account.id, task.subnet_id)
-                now = time.monotonic()
-                if now - notification_last_sent.get(key, 0.0) < 60.0:
-                    return
-                notification_last_sent[key] = now
-        chat_id = account.topic_chat_id if account and account.topic_chat_id else task.telegram_user_id
-        thread_id = account.topic_thread_id if account and account.topic_thread_id else None
-        text = found_message(account, task, ip, fip_id, elapsed) if event == "FOUND" else error_message(account, task, event)
-        markup = None
-        if str(event).startswith(("PERMISSION_ERROR", "AUTH_ERROR")):
-            markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="▶️ Возобновить аккаунт", callback_data=f"scheduler:resume:{account.id}")]])
-        try:
-            await bot.send_message(chat_id, text, message_thread_id=thread_id, reply_markup=markup)
-        except TelegramRetryAfter as exc:
-            # Telegram flood control must never affect the Selectel worker.
-            # The next polling cycle will be allowed to send again.
-            log.warning(
-                "Telegram notification throttled chat_id=%s retry_after=%ss event=%s",
-                chat_id, exc.retry_after, kind,
-            )
-        except Exception:
-            log.exception("Telegram notification failed chat_id=%s event=%s", chat_id, kind)
-
-    manager = AccountSchedulerManager(repo, client_factory, notify, default_cooldown=settings.account_cooldown, stagger_seconds=settings.manual_stagger)
-    bot = Bot(settings.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    manager = AccountSchedulerManager(repo, client_factory, notification_service.send, default_cooldown=settings.account_cooldown, stagger_seconds=settings.manual_stagger)
     dispatcher = Dispatcher()
     dispatcher.include_router(build_multisubnet_router(repo, manager, set(settings.admin_ids)))
     dispatcher.include_router(build_scheduler_ui(repo, manager))
     dispatcher.include_router(build_router(repo, manager, box, client_factory, set(settings.admin_ids), bot, settings.notification_chat_id))
+    async def report_loop():
+        periods = {"hour": timedelta(hours=1), "day": timedelta(days=1)}
+        while True:
+            try:
+                await asyncio.sleep(60)
+                report_settings = await repo.notification_settings()
+                period = periods.get(report_settings.report_period)
+                if not period:
+                    continue
+                now = datetime.utcnow()
+                if report_settings.last_report_at and now - report_settings.last_report_at < period:
+                    continue
+                for user_id in await repo.notification_users():
+                    await notification_service.send_report(user_id)
+                await repo.update_notification_settings(last_report_at=now)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("notification report loop failed")
+
+    report_task = asyncio.create_task(report_loop(), name="notification-reports")
     await manager.restore()
     try:
         await dispatcher.start_polling(bot)
     finally:
+        report_task.cancel()
+        await asyncio.gather(report_task, return_exceptions=True)
         await manager.shutdown()
         for _, client in clients.values():
             await client.close()

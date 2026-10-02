@@ -1,8 +1,10 @@
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 from app.config.regions import REGION_ORDER, REGIONS
 from app.config.subnets import TARGET_SUBNETS
 from app.selectel.client import SelectelClient
+from app.hunter.account_worker import next_scheduled_cycle
 
 
 def test_target_subnets_have_region_and_ru9_targets():
@@ -37,3 +39,15 @@ def test_client_uses_region_endpoint_and_network():
     )
     assert client.network_api_url.endswith("ru-9.cloud.api.selcloud.ru/network/v2.0")
     assert client.network_id == "f16140a4-e736-4655-9a1b-d7d2df6f969e"
+
+
+def test_scheduler_next_cycle_does_not_drift_with_burst_duration():
+    planned = datetime(2026, 1, 1, 12, 0, 0)
+    finished = planned + timedelta(seconds=37)
+    assert next_scheduled_cycle(planned, finished, 300) == planned + timedelta(seconds=300)
+
+
+def test_scheduler_skips_overdue_slots_without_bursting():
+    planned = datetime(2026, 1, 1, 12, 0, 0)
+    finished = planned + timedelta(seconds=901)
+    assert next_scheduled_cycle(planned, finished, 300) == planned + timedelta(seconds=1200)

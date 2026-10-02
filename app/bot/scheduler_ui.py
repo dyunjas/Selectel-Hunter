@@ -1,7 +1,7 @@
 from aiogram import F, Router
 from aiogram.types import CallbackQuery
 from app.config.regions import REGIONS
-from .keyboards import account_burst_settings, back, main_menu, region_settings, scheduler_settings
+from .keyboards import account_settings_keyboard, back, global_notification_settings, main_menu, region_settings, scheduler_settings
 
 
 def build_scheduler_ui(repo, manager):
@@ -38,22 +38,65 @@ def build_scheduler_ui(repo, manager):
         await settings_screen(call)
         await call.answer()
 
+    @router.callback_query(F.data == "notifications:global")
+    async def global_notifications(call):
+        settings = await repo.notification_settings()
+        await call.message.edit_text(
+            "🔔 <b>Настройки уведомлений</b>\n\n"
+            "Общие параметры доставки. Отдельные категории можно включать в карточке аккаунта.",
+            reply_markup=global_notification_settings(settings),
+        )
+        await call.answer()
+
+    @router.callback_query(F.data == "notify:global:toggle")
+    async def global_notifications_toggle(call):
+        settings = await repo.notification_settings()
+        await repo.update_notification_settings(enabled=not settings.enabled)
+        await global_notifications(call)
+
+    @router.callback_query(F.data == "notify:global:aggregate")
+    async def global_notifications_aggregate(call):
+        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+        await call.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="15 сек", callback_data="notify:global:aggregate:15"), InlineKeyboardButton(text="60 сек", callback_data="notify:global:aggregate:60")],
+            [InlineKeyboardButton(text="5 минут", callback_data="notify:global:aggregate:300"), InlineKeyboardButton(text="Не объединять", callback_data="notify:global:aggregate:0")],
+            [InlineKeyboardButton(text="🔙 Назад", callback_data="notifications:global")],
+        ]))
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("notify:global:aggregate:"))
+    async def global_notifications_aggregate_set(call):
+        value = int(call.data.rsplit(":", 1)[1])
+        await repo.update_notification_settings(aggregate_seconds=value)
+        await global_notifications(call)
+
+    @router.callback_query(F.data == "notify:global:reports")
+    async def global_reports(call):
+        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+        await call.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Выключены", callback_data="notify:global:report:off")],
+            [InlineKeyboardButton(text="Каждый час", callback_data="notify:global:report:hour"), InlineKeyboardButton(text="Раз в сутки", callback_data="notify:global:report:day")],
+            [InlineKeyboardButton(text="🔙 Назад", callback_data="notifications:global")],
+        ]))
+        await call.answer()
+
+    @router.callback_query(F.data.startswith("notify:global:report:"))
+    async def global_report_set(call):
+        await repo.update_notification_settings(report_period=call.data.rsplit(":", 1)[1])
+        await global_notifications(call)
+
     @router.callback_query(F.data.startswith("account:settings:"))
     async def account_settings(call):
         account = await repo.get_account(int(call.data.rsplit(":", 1)[1]))
         if not account or account.telegram_user_id != call.from_user.id:
             await call.answer("Аккаунт не найден", show_alert=True)
             return
-        settings = await repo.scheduler_settings()
         await call.message.edit_text(
-            f"⚙️ <b>Настройки аккаунта</b>\n\n👤 {account.display_name}\n"
-            "Параметры burst общие для scheduler и меняются кнопками ниже.\n\n"
-            f"🌐 Прокси: <b>{'установлен' if account.encrypted_proxy_url else 'не установлен'}</b>\n"
-            f"⚡ Между запросами: <b>{settings.burst_request_delay:g} сек</b>\n"
-            f"🔄 Cooldown: <b>{settings.burst_cooldown} сек</b>\n"
-            f"🌐 API timeout: <b>{settings.api_timeout:g} сек</b>\n"
-            f"⚠️ Лимит ошибок: <b>{settings.errors_before_disable}</b>",
-            reply_markup=account_burst_settings(settings, account.id),
+            f"⚙️ <b>Настройки аккаунта</b>\n\n👤 <b>{account.display_name}</b>\n"
+            f"Статус: <b>{account.scheduler_status}</b>\n"
+            f"Прокси: <b>{'подключён' if account.encrypted_proxy_url else 'не настроен'}</b>\n\n"
+            "Здесь находятся только индивидуальные настройки аккаунта. Общие параметры burst находятся в разделе «Настройки поиска». ",
+            reply_markup=account_settings_keyboard(account),
         )
         await call.answer()
 
@@ -129,8 +172,21 @@ def build_scheduler_ui(repo, manager):
         settings = await repo.scheduler_settings()
         accounts = await manager.get_schedule(call.from_user.id)
         stagger = settings.burst_cooldown / len(accounts) if accounts else 0
-        lines = ["📊 <b>Scheduler</b>", f"Активных аккаунтов: <b>{len(accounts)}</b>", f"Cooldown: <b>{settings.burst_cooldown} сек</b>", f"Auto stagger: <b>{stagger:g} сек</b>", "", "<b>Расписание:</b>"]
-        lines += [f"{i * stagger:05.1f} сек · {account.display_name} · {account.scheduler_status}" for i, account in enumerate(accounts)]
+        active = sum(account.scheduler_status == "RUNNING" for account in accounts)
+        waiting = sum(account.scheduler_status in {"RATE_LIMIT_COOLDOWN", "IDLE"} for account in accounts)
+        lines = [
+            "📊 <b>Планировщик аккаунтов</b>",
+            f"Активных аккаунтов: <b>{active}</b>",
+            f"Всего в расписании: <b>{len(accounts)}</b>",
+            f"Период полного обхода: <b>{settings.burst_cooldown} сек</b>",
+            f"Интервал между аккаунтами: <b>{stagger:g} сек</b>",
+            f"Ожидают запуска или cooldown: <b>{waiting}</b>",
+            "",
+            "<b>Ближайшие слоты:</b>",
+        ]
+        for account in accounts:
+            planned = account.next_cycle_at.strftime("%d.%m %H:%M:%S UTC") if account.next_cycle_at else "не запланирован"
+            lines.append(f"👤 {account.display_name} · {account.scheduler_status} · {planned}")
         await call.message.edit_text("\n".join(lines), reply_markup=back())
         await call.answer()
 

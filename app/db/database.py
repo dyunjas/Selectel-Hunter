@@ -21,6 +21,12 @@ class Database:
                 await conn.execute(text("INSERT OR IGNORE INTO target_subnets(subnet_id, region, cidr, enabled, order_index) VALUES (:id, :region, :cidr, 1, :order_index)"), {"id": subnet["subnet_id"], "region": subnet["region"], "cidr": subnet["cidr"], "order_index": order_index})
                 await conn.execute(text("UPDATE target_subnets SET region = :region, cidr = :cidr, order_index = :order_index WHERE subnet_id = :id"), {"id": subnet["subnet_id"], "region": subnet["region"], "cidr": subnet["cidr"], "order_index": order_index})
             if self.engine.url.drivername == "sqlite+aiosqlite":
+                notification_columns = {"last_report_at": "DATETIME"}
+                existing_notifications = await conn.execute(text("PRAGMA table_info(notification_settings)"))
+                notification_names = {row[1] for row in existing_notifications.fetchall()}
+                for name, definition in notification_columns.items():
+                    if name not in notification_names:
+                        await conn.execute(text(f"ALTER TABLE notification_settings ADD COLUMN {name} {definition}"))
                 columns = {
                     "encrypted_proxy_url": "TEXT",
                     "region": "TEXT NOT NULL DEFAULT 'ru-3'",
@@ -29,6 +35,7 @@ class Database:
                     "topic_chat_id": "INTEGER",
                     "topic_thread_id": "INTEGER",
                     "notify_account_added": "INTEGER NOT NULL DEFAULT 1",
+                    "notifications_enabled": "INTEGER NOT NULL DEFAULT 1",
                     "notify_errors": "INTEGER NOT NULL DEFAULT 1",
                     "notify_found": "INTEGER NOT NULL DEFAULT 1",
                     "notify_no_free_ip": "INTEGER NOT NULL DEFAULT 1",
@@ -37,6 +44,8 @@ class Database:
                     "notify_rate_limit": "INTEGER NOT NULL DEFAULT 1",
                     "notify_server": "INTEGER NOT NULL DEFAULT 1",
                     "notify_unknown": "INTEGER NOT NULL DEFAULT 1",
+                    "notify_recovered": "INTEGER NOT NULL DEFAULT 1",
+                    "notify_scheduler": "INTEGER NOT NULL DEFAULT 0",
                     "scheduler_status": "TEXT NOT NULL DEFAULT 'IDLE'",
                     "current_subnet_index": "INTEGER NOT NULL DEFAULT 0",
                     "last_request_at": "DATETIME",
@@ -47,6 +56,7 @@ class Database:
                     "last_cycle_started_at": "DATETIME",
                     "last_cycle_finished_at": "DATETIME",
                     "next_cycle_at": "DATETIME",
+                    "schedule_deviation_seconds": "REAL NOT NULL DEFAULT 0",
                     "burst_subnet_delay": "REAL NOT NULL DEFAULT 0.3",
                     "account_cooldown": "INTEGER NOT NULL DEFAULT 360",
                     "auto_stagger": "INTEGER NOT NULL DEFAULT 1",
