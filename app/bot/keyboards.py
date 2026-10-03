@@ -23,9 +23,40 @@ def back(callback="home", label="🔙 Назад"):
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=label, callback_data=callback)]])
 
 
-def accounts(items):
-    rows = [[InlineKeyboardButton(text=f"👤 {a.display_name} · {a.scheduler_status}", callback_data=f"account:view:{a.id}")] for a in items]
-    rows += [[InlineKeyboardButton(text="➕ Добавить аккаунт", callback_data="account:add")], [InlineKeyboardButton(text="🏠 Главное меню", callback_data="home")]]
+ACCOUNT_PAGE_SIZE = 12
+
+
+def _account_rows(items, page, *, hunting=False):
+    items = list(items)
+    pages = max(1, (len(items) + ACCOUNT_PAGE_SIZE - 1) // ACCOUNT_PAGE_SIZE)
+    page = max(0, min(page, pages - 1))
+    columns = 1 if len(items) <= 4 else 2
+    buttons = []
+    status_icons = {"RUNNING": "🟢", "PAUSED": "⏸", "BLOCKED": "⛔", "RATE_LIMIT_COOLDOWN": "⏳"}
+    for account in items[page * ACCOUNT_PAGE_SIZE:(page + 1) * ACCOUNT_PAGE_SIZE]:
+        name = " ".join(account.display_name.split()) or f"#{account.id}"
+        limit = 22 if columns == 2 else 36
+        if len(name) > limit:
+            name = name[:limit - 1] + "…"
+        icon = "▶️" if hunting else status_icons.get(account.scheduler_status, "👤")
+        prefix = "hunt:account" if hunting else "account:view"
+        buttons.append(InlineKeyboardButton(text=f"{icon} {name}", callback_data=f"{prefix}:{account.id}"))
+    rows = [buttons[i:i + columns] for i in range(0, len(buttons), columns)]
+    if pages > 1:
+        prefix = "hunt:page" if hunting else "account:page"
+        navigation = []
+        if page > 0:
+            navigation.append(InlineKeyboardButton(text="‹", callback_data=f"{prefix}:{page - 1}"))
+        navigation.append(InlineKeyboardButton(text=f"{page + 1}/{pages}", callback_data="keyboard:noop"))
+        if page + 1 < pages:
+            navigation.append(InlineKeyboardButton(text="›", callback_data=f"{prefix}:{page + 1}"))
+        rows.append(navigation)
+    return rows
+
+
+def accounts(items, page=0):
+    rows = _account_rows(items, page)
+    rows.append([InlineKeyboardButton(text="➕ Добавить", callback_data="account:add"), InlineKeyboardButton(text="🏠 Меню", callback_data="home")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -37,8 +68,8 @@ def account_actions(account_id, has_topic=False):
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def hunt_accounts(items):
-    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"▶️ {a.display_name}", callback_data=f"hunt:account:{a.id}")] for a in items] + [[InlineKeyboardButton(text="🔙 Назад", callback_data="account:list")]])
+def hunt_accounts(items, page=0):
+    return InlineKeyboardMarkup(inline_keyboard=_account_rows(items, page, hunting=True) + [[InlineKeyboardButton(text="🔙 Назад", callback_data="account:list")]])
 
 
 def subnets(items, selected):
@@ -160,13 +191,11 @@ def account_stats_periods(account_id, selected="all"):
 def account_actions(account_id, has_topic=False):
     rows = [
         [InlineKeyboardButton(text="▶️ Запустить / выбрать цели", callback_data=f"account:hunt:{account_id}")],
-        [InlineKeyboardButton(text="⚙️ Настройки аккаунта", callback_data=f"account:settings:{account_id}")],
-        [InlineKeyboardButton(text="📈 Статистика", callback_data=f"account:stats:{account_id}")],
-        [InlineKeyboardButton(text="🌐 Проверить подключение", callback_data=f"account:check:{account_id}")],
-        [InlineKeyboardButton(text="⏸ Приостановить", callback_data=f"account:pause:{account_id}"), InlineKeyboardButton(text="▶️ Возобновить", callback_data=f"account:resume:{account_id}")],
-        [InlineKeyboardButton(text="🔔 Уведомления", callback_data=f"account:notifications:{account_id}")],
+        [InlineKeyboardButton(text="⚙️ Настройки", callback_data=f"account:settings:{account_id}"), InlineKeyboardButton(text="📈 Статистика", callback_data=f"account:stats:{account_id}")],
+        [InlineKeyboardButton(text="🌐 Проверить", callback_data=f"account:check:{account_id}"), InlineKeyboardButton(text="🔔 Уведомления", callback_data=f"account:notifications:{account_id}")],
+        [InlineKeyboardButton(text="⏸ Пауза", callback_data=f"account:pause:{account_id}"), InlineKeyboardButton(text="▶️ Возобновить", callback_data=f"account:resume:{account_id}")],
     ]
     if not has_topic:
-        rows.append([InlineKeyboardButton(text="🧵 Создать тему уведомлений", callback_data=f"account:topic:{account_id}")])
-    rows += [[InlineKeyboardButton(text="🗑 Удалить аккаунт", callback_data=f"account:delete:{account_id}")], [InlineKeyboardButton(text="🔙 К списку аккаунтов", callback_data="account:list")]]
+        rows.append([InlineKeyboardButton(text="🧵 Создать тему", callback_data=f"account:topic:{account_id}")])
+    rows.append([InlineKeyboardButton(text="🗑 Удалить", callback_data=f"account:delete:{account_id}"), InlineKeyboardButton(text="🔙 Аккаунты", callback_data="account:list")])
     return InlineKeyboardMarkup(inline_keyboard=rows)

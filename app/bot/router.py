@@ -122,10 +122,16 @@ def build_router(repo, manager, secret_box, client_factory, admin_ids=None, bot=
                 await message.answer(f"⚠️ Аккаунт сохранён, но topic не создан.\nПричина: {type(exc).__name__}: {exc}")
         await state.clear(); await message.answer(f"✅ Аккаунт сохранён\n\nНазвание: {account.display_name}\nProxy: {'включён' if data.get('proxy') else 'не используется'}\nРежим: burst\nTopic: {'создан' if topic_ok else 'не настроен'}", reply_markup=main_menu())
 
+    @router.callback_query(F.data == "keyboard:noop")
+    async def keyboard_noop(call):
+        await call.answer()
+
     @router.callback_query(F.data == "account:list")
+    @router.callback_query(F.data.regexp(r"^account:page:\d+$"))
     async def account_list(call):
+        page = int(call.data.rsplit(":", 1)[1]) if call.data.startswith("account:page:") else 0
         items = await repo.accounts(call.from_user.id); text = "👤 Мои аккаунты\n\nВыберите аккаунт для просмотра настроек:" if items else "👤 Аккаунты\n\nПока нет добавленных аккаунтов."
-        await call.message.edit_text(text, reply_markup=accounts(items)); await call.answer()
+        await call.message.edit_text(text, reply_markup=accounts(items, page)); await call.answer()
     @router.callback_query(F.data.startswith("account:view:"))
     async def account_view(call):
         account = await repo.get_account(int(call.data.rsplit(":", 1)[1]))
@@ -345,10 +351,12 @@ def build_router(repo, manager, secret_box, client_factory, admin_ids=None, bot=
         await repo.update_account(account.id, **values); await state.clear(); await message.answer("✅ Данные аккаунта обновлены.", reply_markup=main_menu())
 
     @router.callback_query(F.data == "hunt:start")
+    @router.callback_query(F.data.regexp(r"^hunt:page:\d+$"))
     async def hunt_start(call):
+        page = int(call.data.rsplit(":", 1)[1]) if call.data.startswith("hunt:page:") else 0
         items = await repo.accounts(call.from_user.id)
         if not items: await call.answer("Сначала добавьте аккаунт", show_alert=True); return
-        await call.message.edit_text("🎯 Запуск поиска\n\nСначала выберите аккаунт:", reply_markup=hunt_accounts(items)); await call.answer()
+        await call.message.edit_text("🎯 Запуск поиска\n\nСначала выберите аккаунт:", reply_markup=hunt_accounts(items, page)); await call.answer()
     @router.callback_query(F.data.startswith("hunt:account:"))
     async def hunt_account(call):
         chosen_account[call.from_user.id] = int(call.data.rsplit(":", 1)[1]); chosen_subnet[call.from_user.id] = set(); await call.message.edit_text("🎯 Запуск поиска\n\nВыберите одну подсеть для этого аккаунта:", reply_markup=subnets(TARGET_SUBNETS, set())); await call.answer()
