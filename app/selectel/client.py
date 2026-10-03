@@ -34,12 +34,9 @@ class SelectelClient:
         if self.session is None or self.session.closed:
             if self.socks_proxy and ProxyConnector is None:
                 raise SelectelError(ErrorType.UNKNOWN, "SOCKS proxy support is not installed; run pip install aiohttp-socks")
-            connector_options = dict(limit=8, limit_per_host=2, enable_cleanup_closed=True)
-            if self.proxy:
-                # Do not reuse proxy tunnels which may have been silently dropped.
-                connector_options["force_close"] = True
-            else:
-                connector_options["keepalive_timeout"] = 15
+            # Reuse connections throughout an account cycle, including proxy tunnels.
+            # The worker closes the session at the cycle boundary.
+            connector_options = dict(limit=8, limit_per_host=2, enable_cleanup_closed=True, keepalive_timeout=15)
             connector = (ProxyConnector.from_url(self.proxy, **connector_options)
                          if self.socks_proxy else aiohttp.TCPConnector(**connector_options))
             self.session = aiohttp.ClientSession(
@@ -62,7 +59,8 @@ class SelectelClient:
         await asyncio.sleep(random.uniform(delay * 0.8, delay * 1.2))
 
     async def close(self):
-        if self.session: await self.session.close(); self.session = None
+        async with self._request_lock:
+            await self._reset_connection()
 
     async def authenticate(self):
         url = self.account.auth_url or f"https://cloud.api.selcloud.ru/identity/v3/auth/tokens"

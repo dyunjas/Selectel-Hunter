@@ -123,6 +123,14 @@ class AccountBurstWorker:
         return "continue"
 
     async def _run_burst(self, account):
+        clients = []
+        try:
+            return await self._run_burst_with_client(account, clients)
+        finally:
+            for client in clients:
+                await client.close()
+
+    async def _run_burst_with_client(self, account, clients):
         targets = await self.repo.enabled_targets(account.id)
         if not targets:
             await self._state(scheduler_status="IDLE", next_cycle_at=None)
@@ -139,7 +147,12 @@ class AccountBurstWorker:
             await self._state(last_request_at=utcnow())
             try:
                 async with self.lock:
-                    client = await self.client_factory(account.id)
+                    if not clients:
+                        client = await self.client_factory(account.id)
+                        clients.append(client)
+                        # A UI check may have left an idle session during cooldown.
+                        await client.close()
+                    client = clients[0]
                     result = await client.create_floating_ip(subnet.region, subnet.subnet_id)
                 await self._state(consecutive_network_errors=0)
             except SelectelError as exc:

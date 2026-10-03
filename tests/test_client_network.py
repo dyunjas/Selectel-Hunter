@@ -147,7 +147,7 @@ async def test_connector_configuration(proxy):
     client = SelectelClient(SimpleNamespace(region="ru-9", network_api_url="unused"), "secret", proxy=proxy)
     try:
         await client.open()
-        assert client.session.connector.force_close is bool(proxy)
+        assert client.session.connector.force_close is False
     finally:
         await client.close()
 
