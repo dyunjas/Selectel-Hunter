@@ -1,4 +1,4 @@
-"""Backward-compatible imports for the single global BURST scheduler."""
+"""Backward-compatible imports for the account BURST scheduler."""
 
 from .account_manager import AccountSchedulerManager, BurstSchedulerManager
 

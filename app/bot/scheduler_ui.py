@@ -175,27 +175,27 @@ def build_scheduler_ui(repo, manager):
         accounts = [item["account"] for item in queue]
         active = sum(account.scheduler_status in {"RUNNING", "RATE_LIMIT_COOLDOWN"} for account in accounts)
         waiting = sum(account.scheduler_status in {"RATE_LIMIT_COOLDOWN", "IDLE", "PAUSED"} for account in accounts)
-        current_id = snapshot["current_account_id"]
-        current = next((account for account in accounts if account.id == current_id), None)
+        running_ids = set(snapshot["running_account_ids"])
+        current = [account.display_name for account in accounts if account.id in running_ids]
         lines = [
-            "📋 <b>Глобальная очередь BURST</b>",
+            "📋 <b>Расписание BURST</b>",
             f"Активных аккаунтов: <b>{active}</b>",
-            f"В очереди: <b>{len(accounts)}</b>",
+            f"Аккаунтов в расписании: <b>{len(accounts)}</b>",
             f"Обязательный cooldown: <b>{settings.burst_cooldown} сек</b>",
-            "Один BURST выполняется до конца — следующий стартует только после него.",
+            "Аккаунты стартуют по расписанию, даже если другие ещё ждут ответы.",
             "",
-            f"▶️ Сейчас выполняется: <b>{current.display_name if current else 'нет'}</b>",
+            f"▶️ Сейчас выполняются: <b>{', '.join(current) if current else 'нет'}</b>",
             f"⏳ Ожидают или на cooldown: <b>{waiting}</b>",
             "",
-            "<b>Порядок очереди:</b>",
+            "<b>Запуски аккаунтов:</b>",
         ]
         for position, item in enumerate(queue, 1):
             account = item["account"]
-            planned = account.next_cycle_at.strftime("%d.%m %H:%M:%S UTC") if account.next_cycle_at else "сразу после освобождения очереди"
+            planned = account.next_cycle_at.strftime("%d.%m %H:%M:%S UTC") if account.next_cycle_at else "не запланирован"
             duration = "—"
             if account.last_cycle_started_at and account.last_cycle_finished_at:
                 duration = f"{(account.last_cycle_finished_at - account.last_cycle_started_at).total_seconds():.1f} сек"
-            marker = "▶️" if account.id == current_id else f"{position}."
+            marker = "▶️" if account.id in running_ids else f"{position}."
             lines.append(
                 f"{marker} <b>{account.display_name}</b> · {account.scheduler_status}\n"
                 f"   запуск: <b>{planned}</b> · последний BURST: <b>{duration}</b>\n"

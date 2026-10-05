@@ -20,7 +20,7 @@ def _utcnow():
 
 
 class BurstSchedulerManager:
-    """One global FIFO executor for all account BURST operations."""
+    """Dispatch account bursts on schedule without waiting for other accounts."""
 
     def __init__(
         self,
@@ -37,17 +37,14 @@ class BurstSchedulerManager:
         self.default_cooldown = default_cooldown
         self.stagger_seconds = stagger_seconds
         self.worker_factory = worker_factory
-        # Compatibility attribute: there are no independent account tasks.
+        # At most one in-flight burst per account.
         self.account_workers = {}
+        self._running_started_at = {}
         self._scheduler_task = None
         self._scheduler_stop = False
         self._wake_event = asyncio.Event()
-        self._global_burst_lock = asyncio.Lock()
         self._schedule_guard = asyncio.Lock()
         self._start_guard = asyncio.Lock()
-        self._current_account_id = None
-        self._current_burst_started_at = None
-        self._current_burst_finished_at = None
 
     @staticmethod
     def _active(account):
@@ -73,7 +70,7 @@ class BurstSchedulerManager:
         return self._scheduler_task
 
     async def recalculate_schedule(self, reset=True):
-        """Rebuild durable queue metadata without creating worker tasks."""
+        """Rebuild start times while preserving in-flight account cycles."""
         async with self._schedule_guard:
             accounts = await self.repo.all_accounts()
             settings = await self.repo.scheduler_settings()
@@ -87,7 +84,9 @@ class BurstSchedulerManager:
             for position, account in enumerate(active):
                 previous = account.next_cycle_at
                 cooldown = account.cooldown_until
-                if not reset and previous and previous > now:
+                if account.id in self.account_workers:
+                    next_cycle = previous or now
+                elif not reset and previous and previous > now:
                     next_cycle = previous
                 else:
                     calculated = now + timedelta(seconds=position * (spacing or self.stagger_seconds))
@@ -165,7 +164,7 @@ class BurstSchedulerManager:
         account = await self.repo.get_account(account_id)
         if not account:
             return None
-        if self._current_account_id == account_id:
+        if account_id in self.account_workers:
             return False
         await self.repo.update_account(account_id, scheduler_status="RUNNING", cooldown_until=None, next_cycle_at=_utcnow())
         await self._ensure_scheduler()
@@ -194,22 +193,23 @@ class BurstSchedulerManager:
             try:
                 self._wake_event.clear()
                 accounts = await self.repo.all_accounts()
-                eligible = [account for account in accounts if self._eligible(account)]
+                eligible = [account for account in accounts if self._eligible(account) and account.id not in self.account_workers]
                 now = _utcnow()
                 due = [account for account in eligible if not account.next_cycle_at or account.next_cycle_at <= now]
                 if due:
-                    account = min(
-                        due,
+                    due.sort(
                         key=lambda item: (item.next_cycle_at or datetime.min, item.scheduler_position, item.id),
                     )
-                    if account.scheduler_status == "RATE_LIMIT_COOLDOWN":
-                        await self.repo.update_account(account.id, scheduler_status="RUNNING", cooldown_until=None)
-                        account = await self.repo.get_account(account.id)
-                    await self._execute_burst(account)
+                    for account in due:
+                        # Register synchronously before yielding so this account
+                        # cannot be dispatched again while awaiting its replies.
+                        task = asyncio.create_task(self._execute_burst(account), name=f"account-burst-{account.id}")
+                        self.account_workers[account.id] = task
+                        task.add_done_callback(lambda completed, account_id=account.id: self._burst_done(account_id, completed))
                     continue
 
                 future = [account.next_cycle_at for account in eligible if account.next_cycle_at]
-                timeout = max(0.1, (min(future) - now).total_seconds()) if future else 60.0
+                timeout = max(0.001, (min(future) - now).total_seconds()) if future else 60.0
                 try:
                     await asyncio.wait_for(self._wake_event.wait(), timeout=timeout)
                 except asyncio.TimeoutError:
@@ -221,51 +221,53 @@ class BurstSchedulerManager:
                 log.exception("global burst scheduler iteration failed")
                 await asyncio.sleep(1)
 
+    def _burst_done(self, account_id, task):
+        if self.account_workers.get(account_id) is task:
+            self.account_workers.pop(account_id, None)
+            self._running_started_at.pop(account_id, None)
+        if not task.cancelled() and task.exception():
+            log.error("account burst task failed account_id=%s", account_id,
+                      exc_info=task.exception())
+        self._wake()
+
     async def _execute_burst(self, account):
-        async with self._global_burst_lock:
+        try:
             current = await self.repo.get_account(account.id)
             if not current or not self._eligible(current):
                 return
-            self._current_account_id = current.id
-            self._current_burst_started_at = _utcnow()
-            self._current_burst_finished_at = None
-            try:
-                worker = self.worker_factory(current.id, self.repo, self.client_factory, self.notify, asyncio.Lock())
-                result = await worker.run_once()
-                finished = _utcnow()
-                self._current_burst_finished_at = finished
-                # A burst that ended with 429/403 is still a completed
-                # execution attempt. Persist this marker so a restart does not
-                # mistake a handled API response for an interrupted BURST.
-                await self.repo.update_account(current.id, last_cycle_finished_at=finished)
-                if result == "finished":
-                    latest = await self.repo.get_account(current.id)
-                    if not latest or latest.scheduler_status != "RUNNING":
-                        return
-                    settings = await self.repo.scheduler_settings()
-                    period = max(1, int(settings.burst_cooldown or self.default_cooldown or 1))
-                    await self.repo.update_account(
-                        current.id,
-                        last_cycle_finished_at=finished,
-                        next_cycle_at=finished + timedelta(seconds=period),
-                    )
-                # RATE_LIMIT_COOLDOWN and BLOCKED are persisted by the worker.
-            except asyncio.CancelledError:
-                # The async context releases the global lock on cancellation.
-                raise
-            except Exception:
-                log.exception("global burst execution failed account_id=%s", current.id)
+            if current.scheduler_status == "RATE_LIMIT_COOLDOWN":
+                await self.repo.update_account(current.id, scheduler_status="RUNNING", cooldown_until=None)
+                current = await self.repo.get_account(current.id)
+            self._running_started_at[current.id] = _utcnow()
+            worker = self.worker_factory(current.id, self.repo, self.client_factory, self.notify, asyncio.Lock())
+            result = await worker.run_once()
+            finished = _utcnow()
+            # Handled 429/403 responses still complete an execution attempt.
+            await self.repo.update_account(current.id, last_cycle_finished_at=finished)
+            if result == "finished":
+                latest = await self.repo.get_account(current.id)
+                if not latest or latest.scheduler_status != "RUNNING":
+                    return
                 settings = await self.repo.scheduler_settings()
                 period = max(1, int(settings.burst_cooldown or self.default_cooldown or 1))
                 await self.repo.update_account(
                     current.id,
-                    scheduler_status="RUNNING",
+                    next_cycle_at=finished + timedelta(seconds=period),
+                )
+            # RATE_LIMIT_COOLDOWN and BLOCKED are persisted by the worker.
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("account burst execution failed account_id=%s", account.id)
+            latest = await self.repo.get_account(account.id)
+            if latest and self._eligible(latest):
+                settings = await self.repo.scheduler_settings()
+                period = max(1, int(settings.burst_cooldown or self.default_cooldown or 1))
+                await self.repo.update_account(
+                    account.id,
                     next_cycle_at=_utcnow() + timedelta(seconds=period),
                     last_cycle_finished_at=_utcnow(),
                 )
-            finally:
-                self._current_account_id = None
-                self._wake()
 
     async def get_schedule(self, user_id=None):
         accounts = await self.repo.all_accounts() if user_id is None else await self.repo.accounts(user_id)
@@ -275,6 +277,7 @@ class BurstSchedulerManager:
         accounts = await self.get_schedule(user_id)
         now = _utcnow()
         queue = []
+        running = [account.id for account in accounts if account.id in self.account_workers]
         for account in accounts:
             if account.scheduler_status == "RATE_LIMIT_COOLDOWN" and account.cooldown_until:
                 reason = f"429: cooldown до {account.cooldown_until:%H:%M:%S} UTC"
@@ -282,15 +285,18 @@ class BurstSchedulerManager:
                 reason = "остановлен из-за ошибки доступа"
             elif account.scheduler_status == "PAUSED":
                 reason = "пауза"
+            elif account.id in self.account_workers:
+                reason = "выполняет запросы"
             elif account.next_cycle_at and account.next_cycle_at > now:
                 reason = "ждёт обязательный cooldown"
             else:
                 reason = "готов к запуску"
             queue.append({"account": account, "reason": reason})
         return {
-            "current_account_id": self._current_account_id,
-            "current_started_at": self._current_burst_started_at,
-            "current_finished_at": self._current_burst_finished_at,
+            "running_account_ids": running,
+            "current_account_id": running[0] if running else None,
+            "current_started_at": self._running_started_at.get(running[0]) if running else None,
+            "current_finished_at": None,
             "queue": queue,
         }
 
@@ -346,6 +352,13 @@ class BurstSchedulerManager:
         if task and not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+        workers = list(self.account_workers.values())
+        for worker in workers:
+            worker.cancel()
+        if workers:
+            await asyncio.gather(*workers, return_exceptions=True)
+        self.account_workers.clear()
+        self._running_started_at.clear()
 
 
 AccountSchedulerManager = BurstSchedulerManager
