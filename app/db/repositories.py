@@ -40,9 +40,6 @@ class Repository:
         async with self.sessions() as s:
             if data.get("region", "ru-3") not in REGIONS:
                 raise ValueError("Неподдерживаемый регион аккаунта")
-            count = await s.scalar(select(func.count(Account.id)).where(Account.enabled))
-            if count >= 20:
-                raise ValueError("Достигнут лимит: не более 20 аккаунтов")
             if "scheduler_position" not in data:
                 position = await s.scalar(select(func.max(Account.scheduler_position)))
                 data["scheduler_position"] = (position if position is not None else -1) + 1
