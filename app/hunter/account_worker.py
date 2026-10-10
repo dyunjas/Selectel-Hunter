@@ -15,14 +15,16 @@ def utcnow():
 
 
 def next_scheduled_cycle(planned_start, finished_at, period_seconds, scheduled=None):
-    """Return a slot after the real finish time and mandatory cooldown."""
+    """Keep the start-to-start cadence, skipping slots missed by a long BURST."""
     period = timedelta(seconds=max(1, int(period_seconds or 1)))
-    minimum = finished_at + period
-    return max(scheduled or minimum, minimum)
+    next_cycle = scheduled if scheduled and scheduled > planned_start else planned_start + period
+    if next_cycle <= finished_at:
+        next_cycle += period * ((finished_at - next_cycle) // period + 1)
+    return next_cycle
 
 
 class AccountBurstWorker:
-    """Executes one account burst sequentially, then waits for its cooldown."""
+    """Executes the targets of one account BURST sequentially."""
 
     def __init__(self, account_id, repo, client_factory, notify, lock=None, initial_delay=0, on_schedule_change=None):
         self.account_id = account_id

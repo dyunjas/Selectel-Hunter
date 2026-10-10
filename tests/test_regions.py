@@ -44,10 +44,10 @@ def test_client_uses_region_endpoint_and_network():
 def test_scheduler_next_cycle_does_not_drift_with_burst_duration():
     planned = datetime(2026, 1, 1, 12, 0, 0)
     finished = planned + timedelta(seconds=37)
-    assert next_scheduled_cycle(planned, finished, 300) == finished + timedelta(seconds=300)
+    assert next_scheduled_cycle(planned, finished, 300) == planned + timedelta(seconds=300)
 
 
 def test_scheduler_skips_overdue_slots_without_bursting():
     planned = datetime(2026, 1, 1, 12, 0, 0)
     finished = planned + timedelta(seconds=901)
-    assert next_scheduled_cycle(planned, finished, 300) == finished + timedelta(seconds=300)
+    assert next_scheduled_cycle(planned, finished, 300) == planned + timedelta(seconds=1200)

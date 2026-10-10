@@ -1,21 +1,15 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 
-def region_picker(prefix="region"):
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🌐 ru-3", callback_data=f"{prefix}:ru-3"), InlineKeyboardButton(text="🌐 ru-9", callback_data=f"{prefix}:ru-9")],
-        [InlineKeyboardButton(text="🔙 Назад", callback_data="home")],
-    ])
-
-
 def main_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="👤 Аккаунты", callback_data="account:list"), InlineKeyboardButton(text="🚀 Запустить все", callback_data="hunt:all")],
-        [InlineKeyboardButton(text="▶️ Запустить выборочно", callback_data="hunt:start")],
+        [InlineKeyboardButton(text="▶️ Выбрать аккаунт для запуска", callback_data="hunt:start")],
         [InlineKeyboardButton(text="📊 Расписание", callback_data="scheduler:view"), InlineKeyboardButton(text="🎯 Подсети", callback_data="targets:view")],
         [InlineKeyboardButton(text="🌍 Регионы", callback_data="regions:view"), InlineKeyboardButton(text="✅ Найденные IP", callback_data="found:list")],
         [InlineKeyboardButton(text="⚙️ Настройки поиска", callback_data="scheduler:settings"), InlineKeyboardButton(text="📈 Статистика", callback_data="stats:view")],
-        [InlineKeyboardButton(text="🔔 Уведомления", callback_data="notifications:global")],
+        [InlineKeyboardButton(text="🔔 Уведомления", callback_data="notifications:global"), InlineKeyboardButton(text="ℹ️ Помощь", callback_data="help")],
+        [InlineKeyboardButton(text="🔄 Обновить статус", callback_data="home")],
     ])
 
 
@@ -60,29 +54,13 @@ def accounts(items, page=0):
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def account_actions(account_id, has_topic=False):
-    rows = [[InlineKeyboardButton(text="▶️ Запустить / цели", callback_data=f"account:hunt:{account_id}")], [InlineKeyboardButton(text="⚙️ Настройки аккаунта", callback_data=f"account:settings:{account_id}")], [InlineKeyboardButton(text="⏸ Пауза", callback_data=f"account:pause:{account_id}")], [InlineKeyboardButton(text="▶️ Возобновить", callback_data=f"account:resume:{account_id}")], [InlineKeyboardButton(text="🔔 Уведомления", callback_data=f"account:notifications:{account_id}")]]
-    if not has_topic:
-        rows.append([InlineKeyboardButton(text="🧵 Создать topic", callback_data=f"account:topic:{account_id}")])
-    rows += [[InlineKeyboardButton(text="🗑 Удалить", callback_data=f"account:delete:{account_id}")], [InlineKeyboardButton(text="🔙 К аккаунтам", callback_data="account:list")]]
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
 def hunt_accounts(items, page=0):
-    return InlineKeyboardMarkup(inline_keyboard=_account_rows(items, page, hunting=True) + [[InlineKeyboardButton(text="🔙 Назад", callback_data="account:list")]])
+    return InlineKeyboardMarkup(inline_keyboard=_account_rows(items, page, hunting=True) + [[InlineKeyboardButton(text="🏠 Главное меню", callback_data="home")]])
 
 
-def subnets(items, selected):
+def subnets(items, selected, back_callback="hunt:back"):
     rows = [[InlineKeyboardButton(text=("✅ " if x["subnet_id"] in selected else "▫️ ") + f"{x['region']} · {x['cidr']}", callback_data=f"subnet:toggle:{x['subnet_id']}")] for x in items]
-    rows += [[InlineKeyboardButton(text="✅ Все", callback_data="subnet:all"), InlineKeyboardButton(text="▫️ Сбросить", callback_data="subnet:none")], [InlineKeyboardButton(text="🚀 Запустить", callback_data="subnet:save")], [InlineKeyboardButton(text="🔙 Назад", callback_data="hunt:back")]]
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def notification_settings(account):
-    def mark(value): return "✅" if value else "▫️"
-    fields = [("notify_account_added", "Аккаунт добавлен"), ("notify_found", "Floating IP найден"), ("notify_no_free_ip", "Нет свободных IP"), ("notify_permission", "Права / авторизация"), ("notify_network", "Сетевые ошибки"), ("notify_rate_limit", "Rate limit"), ("notify_server", "Ошибки 5xx"), ("notify_unknown", "Неизвестные ошибки")]
-    rows = [[InlineKeyboardButton(text=f"{mark(getattr(account, field))} {label}", callback_data=f"notify:toggle:{account.id}:{field}")] for field, label in fields]
-    rows.append([InlineKeyboardButton(text="🔙 К аккаунту", callback_data=f"account:view:{account.id}")])
+    rows += [[InlineKeyboardButton(text="✅ Все", callback_data="subnet:all"), InlineKeyboardButton(text="▫️ Сбросить", callback_data="subnet:none")], [InlineKeyboardButton(text=f"🚀 Сохранить и запустить · {len(selected)} выбрано", callback_data="subnet:save")], [InlineKeyboardButton(text="🔙 К аккаунту", callback_data=back_callback)]]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -99,13 +77,12 @@ def task_actions(task_id):
 
 
 def scheduler_settings(settings):
-    stagger = settings.burst_cooldown
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"⚡ Пауза между запросами: {settings.burst_request_delay:g} сек", callback_data="burst:delay")],
-        [InlineKeyboardButton(text=f"🔄 Пауза между циклами: {settings.burst_cooldown} сек", callback_data="burst:cooldown")],
+        [InlineKeyboardButton(text=f"🔄 Период BURST аккаунта: {settings.burst_cooldown} сек", callback_data="burst:cooldown")],
         [InlineKeyboardButton(text=f"🌐 Тайм-аут API: {settings.api_timeout:g} сек", callback_data="burst:timeout")],
         [InlineKeyboardButton(text=f"⚠️ Лимит критических ошибок: {settings.errors_before_disable}", callback_data="burst:errors")],
-        [InlineKeyboardButton(text=f"👥 Автораспределение аккаунтов: {stagger} сек", callback_data="burst:noop")],
+        [InlineKeyboardButton(text="📋 Открыть расписание", callback_data="scheduler:view")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="home")],
     ])
 
@@ -159,10 +136,11 @@ def notification_settings(account):
 
 def global_notification_settings(settings):
     mark = "✅" if settings.enabled else "▫️"
+    reports = {"off": "выключены", "hour": "каждый час", "day": "раз в сутки"}.get(settings.report_period, settings.report_period)
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"{mark} Все уведомления", callback_data="notify:global:toggle")],
         [InlineKeyboardButton(text=f"🧹 Объединять повторы: {settings.aggregate_seconds} сек", callback_data="notify:global:aggregate")],
-        [InlineKeyboardButton(text=f"📊 Отчёты: {settings.report_period}", callback_data="notify:global:reports")],
+        [InlineKeyboardButton(text=f"📊 Отчёты: {reports}", callback_data="notify:global:reports")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="home")],
     ])
 
@@ -173,9 +151,9 @@ def account_settings_keyboard(account):
         [InlineKeyboardButton(text="🔔 Уведомления", callback_data=f"account:notifications:{account.id}")],
         [InlineKeyboardButton(text="📈 Статистика аккаунта", callback_data=f"account:stats:{account.id}")],
         [InlineKeyboardButton(text="🌐 Проверить подключение", callback_data=f"account:check:{account.id}")],
-        [InlineKeyboardButton(text="⏸ Приостановить", callback_data=f"account:pause:{account.id}"), InlineKeyboardButton(text="▶️ Возобновить", callback_data=f"account:resume:{account.id}")],
+        account_run_controls(account.id, account.scheduler_status),
         [InlineKeyboardButton(text="🗑 Удалить аккаунт", callback_data=f"account:delete:{account.id}")],
-        [InlineKeyboardButton(text="🔙 К списку аккаунтов", callback_data="account:list")],
+        [InlineKeyboardButton(text="🔙 К аккаунту", callback_data=f"account:view:{account.id}")],
     ])
 
 
@@ -187,15 +165,82 @@ def account_stats_periods(account_id, selected="all"):
     ])
 
 
-# Final account card layout used by all navigation paths.
-def account_actions(account_id, has_topic=False):
+def account_run_controls(account_id, status=None):
+    if status in {"RUNNING", "RATE_LIMIT_COOLDOWN"}:
+        return [InlineKeyboardButton(text="⏸ Поставить на паузу", callback_data=f"account:pause:{account_id}")]
+    label = "▶️ Возобновить поиск" if status == "PAUSED" else "▶️ Запустить поиск"
+    return [InlineKeyboardButton(text=label, callback_data=f"account:resume:{account_id}")]
+
+
+def account_actions(account_id, has_topic=False, status=None):
+    target_label = "🎯 Подсети для поиска" if status in {"RUNNING", "RATE_LIMIT_COOLDOWN"} else "🎯 Выбрать подсети и запустить"
     rows = [
-        [InlineKeyboardButton(text="▶️ Запустить / выбрать цели", callback_data=f"account:hunt:{account_id}")],
+        [InlineKeyboardButton(text=target_label, callback_data=f"account:hunt:{account_id}")],
         [InlineKeyboardButton(text="⚙️ Настройки", callback_data=f"account:settings:{account_id}"), InlineKeyboardButton(text="📈 Статистика", callback_data=f"account:stats:{account_id}")],
         [InlineKeyboardButton(text="🌐 Проверить", callback_data=f"account:check:{account_id}"), InlineKeyboardButton(text="🔔 Уведомления", callback_data=f"account:notifications:{account_id}")],
-        [InlineKeyboardButton(text="⏸ Пауза", callback_data=f"account:pause:{account_id}"), InlineKeyboardButton(text="▶️ Возобновить", callback_data=f"account:resume:{account_id}")],
+        account_run_controls(account_id, status),
     ]
     if not has_topic:
         rows.append([InlineKeyboardButton(text="🧵 Создать тему", callback_data=f"account:topic:{account_id}")])
-    rows.append([InlineKeyboardButton(text="🗑 Удалить", callback_data=f"account:delete:{account_id}"), InlineKeyboardButton(text="🔙 Аккаунты", callback_data="account:list")])
+    rows.append([InlineKeyboardButton(text="🔄 Обновить", callback_data=f"account:view:{account_id}"), InlineKeyboardButton(text="🔙 Аккаунты", callback_data="account:list")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def wizard_controls(skip_proxy=False):
+    rows = []
+    if skip_proxy:
+        rows.append([InlineKeyboardButton(text="Без прокси", callback_data="account:add:skip_proxy")])
+    rows.append([InlineKeyboardButton(text="✖️ Отменить добавление", callback_data="home")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def schedule_controls(visible, page, pages):
+    buttons = []
+    for item in visible:
+        account = item["account"]
+        name = " ".join(account.display_name.split())
+        if len(name) > 24:
+            name = name[:23] + "…"
+        buttons.append(InlineKeyboardButton(text=f"👤 {name}", callback_data=f"account:view:{account.id}"))
+    rows = [buttons[index:index + 2] for index in range(0, len(buttons), 2)]
+    if pages > 1:
+        navigation = []
+        if page:
+            navigation.append(InlineKeyboardButton(text="‹ Назад", callback_data=f"scheduler:page:{page - 1}"))
+        navigation.append(InlineKeyboardButton(text=f"{page + 1}/{pages}", callback_data="keyboard:noop"))
+        if page + 1 < pages:
+            navigation.append(InlineKeyboardButton(text="Далее ›", callback_data=f"scheduler:page:{page + 1}"))
+        rows.append(navigation)
+    rows += [
+        [InlineKeyboardButton(text="🔄 Обновить", callback_data=f"scheduler:page:{page}"), InlineKeyboardButton(text="⚙️ Настройки", callback_data="scheduler:settings")],
+        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="home")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def account_return(account_id):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👤 К аккаунту", callback_data=f"account:view:{account_id}"), InlineKeyboardButton(text="📋 Расписание", callback_data="scheduler:view")],
+        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="home")],
+    ])
+
+
+def refresh_back(callback, back_callback="home"):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Обновить", callback_data=callback), InlineKeyboardButton(text="🔙 Назад", callback_data=back_callback)],
+    ])
+
+
+def found_pages(page, pages):
+    rows = []
+    navigation = []
+    if page:
+        navigation.append(InlineKeyboardButton(text="‹ Назад", callback_data=f"found:page:{page - 1}"))
+    if pages > 1:
+        navigation.append(InlineKeyboardButton(text=f"{page + 1}/{pages}", callback_data="keyboard:noop"))
+    if page + 1 < pages:
+        navigation.append(InlineKeyboardButton(text="Далее ›", callback_data=f"found:page:{page + 1}"))
+    if navigation:
+        rows.append(navigation)
+    rows.append([InlineKeyboardButton(text="🔄 Обновить", callback_data=f"found:page:{page}"), InlineKeyboardButton(text="🏠 Главное меню", callback_data="home")])
     return InlineKeyboardMarkup(inline_keyboard=rows)

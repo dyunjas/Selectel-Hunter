@@ -108,8 +108,8 @@ async def test_twenty_accounts_start_on_schedule_while_others_wait_for_replies()
         assert started == 20
         assert failed == []
         await asyncio.wait_for(_wait_for_events(events, 20), timeout=5)
-        starts = [event for event in events if event[0] == "start"]
-        finishes = [event for event in events if event[0] == "finish"]
+        starts = [event for event in events if event[0] == "start"][:20]
+        finishes = [event for event in events if event[0] == "finish"][:20]
         assert len(starts) == len(finishes) == 20
         assert [event[1] for event in starts] == list(range(1, 21))
         assert starts[-1][2] < finishes[0][2]
@@ -124,6 +124,59 @@ async def _wait_for_events(events, count):
 
 
 @pytest.mark.asyncio
+async def test_repeated_bursts_keep_start_cadence_without_finish_cooldown():
+    accounts = [make_account(1), make_account(2)]
+    repo = FakeRepo(accounts, cooldown=1)
+    events = []
+    manager = build_manager(repo, events, {1: 0.3, 2: 0.15})
+    try:
+        await manager.start_all_accounts(1)
+        await asyncio.wait_for(_wait_for_events(events, 5), timeout=4)
+        starts = [event for event in events if event[0] == "start"]
+        assert [event[1] for event in starts[:5]] == [1, 2, 1, 2, 1]
+        for index, event in enumerate(starts[:5]):
+            assert abs(event[2] - starts[0][2] - index * 0.5) < 0.12
+        assert all(account.cooldown_until is None for account in accounts)
+    finally:
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["run_now", "resume_account", "start_account", "start_all_accounts"])
+async def test_manual_actions_preserve_only_rate_limit_cooldown(action):
+    account = make_account(1, status="RATE_LIMIT_COOLDOWN")
+    until = utcnow() + timedelta(seconds=10)
+    account.cooldown_until = until
+    account.next_cycle_at = until
+    repo = FakeRepo([account], cooldown=1)
+    events = []
+    manager = build_manager(repo, events)
+    try:
+        await getattr(manager, action)(1)
+        await manager.recalculate_schedule(reset=True)
+        await asyncio.sleep(0.02)
+        assert events == []
+        assert account.scheduler_status == "RATE_LIMIT_COOLDOWN"
+        assert account.cooldown_until == until
+    finally:
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_restore_discards_old_finish_based_cooldown():
+    account = make_account(1)
+    account.last_cycle_started_at = utcnow() - timedelta(seconds=2)
+    account.last_cycle_finished_at = utcnow() - timedelta(seconds=0.1)
+    account.cooldown_until = utcnow() + timedelta(seconds=10)
+    account.next_cycle_at = account.cooldown_until
+    repo = FakeRepo([account], cooldown=1)
+    manager = build_manager(repo, [])
+    await manager.recalculate_schedule(reset=True)
+    assert account.cooldown_until is None
+    assert account.next_cycle_at < account.last_cycle_finished_at + timedelta(seconds=1)
+
+
+@pytest.mark.asyncio
 async def test_long_burst_does_not_delay_next_account_and_respects_own_cooldown():
     accounts = [make_account(1), make_account(2)]
     repo = FakeRepo(accounts)
@@ -135,7 +188,7 @@ async def test_long_burst_does_not_delay_next_account_and_respects_own_cooldown(
         first_finish = next(event[2] for event in events if event[:2] == ("finish", 1))
         second_start = next(event[2] for event in events if event[:2] == ("start", 2))
         assert second_start < first_finish
-        assert repo.rows[1].next_cycle_at >= repo.rows[1].last_cycle_finished_at + timedelta(seconds=1)
+        assert repo.rows[1].next_cycle_at < repo.rows[1].last_cycle_finished_at + timedelta(seconds=1)
     finally:
         await manager.shutdown()
 
@@ -150,7 +203,7 @@ async def test_rate_limit_stops_current_burst_and_persists_retry_after():
     try:
         assert account.scheduler_status == "RATE_LIMIT_COOLDOWN"
         assert account.cooldown_until is not None
-        assert account.next_cycle_at == account.cooldown_until
+        assert account.next_cycle_at >= account.cooldown_until
     finally:
         await manager.shutdown()
 
@@ -196,7 +249,7 @@ async def test_manual_run_starts_while_another_account_waits():
     accounts = [make_account(1), make_account(2)]
     repo = FakeRepo(accounts)
     events = []
-    manager = build_manager(repo, events, {1: 0.04, 2: 0.001})
+    manager = build_manager(repo, events, {1: 0.9, 2: 0.001})
     try:
         await manager.start_all_accounts(1)
         await manager.run_now(2)
@@ -251,8 +304,8 @@ async def test_recalculate_after_account_add_and_remove_keeps_queue_order():
 @pytest.mark.asyncio
 async def test_pending_response_does_not_delay_later_accounts_or_duplicate_cycle():
     now = utcnow()
-    accounts = [make_account(index, next_cycle_at=now + timedelta(seconds=(index - 1) * 0.04)) for index in range(1, 4)]
-    repo = FakeRepo(accounts, cooldown=10)
+    accounts = [make_account(index, next_cycle_at=now + timedelta(seconds=(index - 1) / 3)) for index in range(1, 4)]
+    repo = FakeRepo(accounts, cooldown=1)
     first_started = asyncio.Event()
     all_started = asyncio.Event()
     release = asyncio.Event()
@@ -276,7 +329,7 @@ async def test_pending_response_does_not_delay_later_accounts_or_duplicate_cycle
         await manager._ensure_scheduler()
         await asyncio.wait_for(first_started.wait(), timeout=1)
         assert await manager.run_now(1) is False
-        await asyncio.wait_for(all_started.wait(), timeout=0.5)
+        await asyncio.wait_for(all_started.wait(), timeout=2)
         assert starts == [1, 2, 3]
         assert set(manager.account_workers) == {1, 2, 3}
         snapshot = await manager.get_scheduler_snapshot(1)
@@ -296,7 +349,7 @@ async def test_pending_response_does_not_delay_later_accounts_or_duplicate_cycle
 @pytest.mark.asyncio
 async def test_worker_failure_does_not_stop_another_account_or_revive_paused_account():
     accounts = [make_account(1), make_account(2)]
-    repo = FakeRepo(accounts, cooldown=10)
+    repo = FakeRepo(accounts, cooldown=1)
     completed = asyncio.Event()
 
     class FailingBurst:
@@ -313,7 +366,7 @@ async def test_worker_failure_does_not_stop_another_account_or_revive_paused_acc
     manager = BurstSchedulerManager(repo, None, None, worker_factory=lambda account_id, *_: FailingBurst(account_id))
     try:
         await manager._ensure_scheduler()
-        await asyncio.wait_for(completed.wait(), timeout=1)
+        await asyncio.wait_for(completed.wait(), timeout=3)
         assert accounts[0].scheduler_status == "PAUSED"
         assert accounts[0].next_cycle_at is None
         assert accounts[1].scheduler_status == "RUNNING"
