@@ -124,7 +124,12 @@ class BurstSchedulerManager:
                 return None
             if getattr(self.repo, "queue", None) is not None and not await self.repo.queue.list(account_id=account_id):
                 targets = await self.repo.enabled_targets(account_id)
-                await self.repo.queue.enqueue(account, [{"region": t.region, "subnet_id": t.subnet_id, "cidr": t.cidr} for t in targets if t.region == account.region])
+                from app.bot.presentation import regions_for
+                selection = (await self.repo.ui.preferences(account.telegram_user_id)).selected_region if getattr(self.repo, "ui", None) else account.region
+                chosen = [{"region": t.region, "subnet_id": t.subnet_id, "cidr": t.cidr} for t in targets if t.region in regions_for(selection)]
+                if not chosen:
+                    raise ValueError("В выбранном городе нет включённых доступных подсетей")
+                await self.repo.queue.enqueue(account, chosen)
             await self.repo.update_account(account_id, scheduler_status=self._activation_status(account))
             if reschedule:
                 await self.recalculate_schedule(reset=True)
@@ -199,13 +204,25 @@ class BurstSchedulerManager:
         self._wake()
         return self._scheduler_task
 
-    async def start_all_accounts(self, user_id):
+    async def start_all_accounts(self, user_id, selection=None, exclusive=True):
         """Activate all owned accounts, then rebuild the queue exactly once."""
+        if getattr(self.repo, "ui", None) is not None and selection is None:
+            selection = (await self.repo.ui.preferences(user_id)).selected_region
+        from app.bot.presentation import regions_for
+        selected_regions = regions_for(selection) if selection is not None else ()
+        if selection is not None and not selected_regions:
+            raise ValueError("Неподдерживаемый город поиска")
         started = 0
         failed = []
         for account in await self.repo.accounts(user_id):
             try:
-                if getattr(self.repo, "queue", None) is not None and not await self.repo.queue.list(account_id=account.id):
+                if getattr(self.repo, "queue", None) is not None and selection is not None:
+                    targets = await self.repo.enabled_targets(account.id)
+                    chosen = [{"region": t.region, "subnet_id": t.subnet_id, "cidr": t.cidr} for t in targets if t.region in selected_regions]
+                    if not chosen:
+                        raise ValueError("В выбранном городе нет включённых доступных подсетей")
+                    await self.repo.queue.enqueue(account, chosen, exclusive=exclusive)
+                elif getattr(self.repo, "queue", None) is not None and not await self.repo.queue.list(account_id=account.id):
                     targets = await self.repo.enabled_targets(account.id)
                     await self.repo.queue.enqueue(account, [{"region": t.region, "subnet_id": t.subnet_id, "cidr": t.cidr} for t in targets if t.region == account.region])
                 await self.repo.update_account(account.id, scheduler_status=self._activation_status(account))

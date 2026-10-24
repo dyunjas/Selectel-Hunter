@@ -1,5 +1,5 @@
 from .presentation import (RULE, region_name, number, duration, timestamp, timezone_name,
-                           keyboard, job_text, job_keyboard, friendly_error, JOB_LABELS, resource_status)
+                           keyboard, job_text, job_keyboard, friendly_error, JOB_LABELS, resource_status, regions_for)
 from .formatting import safe
 from .keyboards import main_menu
 
@@ -11,18 +11,26 @@ class UiScreens:
     async def dashboard(self, user_id):
         pref = await self.repo.ui.preferences(user_id)
         stats = await self.repo.ui.stats(user_id)
+        cities = await self.repo.ui.active_by_city(user_id)
         task = getattr(self.manager, "_scheduler_task", None)
         status = "🟢 работает" if task and not task.done() else "⚪ планировщик не запущен"
         text = (f"🎯 <b>SELECTEL IP HUNTER</b>\n{RULE}\n\n"
-                f"🌍 Регион: <b>{safe(region_name(pref.selected_region))}</b>\n"
+                f"🌍 Выбор для запуска: <b>{safe(region_name(pref.selected_region))}</b>\n"
                 f"Система: {status}\n📋 Активных заданий: <b>{number(stats['active'])}</b>\n"
+                f"Сейчас ищут: Москва — <b>{number(cities['ru-2'])}</b>, Петербург — <b>{number(cities['spb'])}</b>\n"
                 f"✅ Найдено IP: <b>{number(stats['found'])}</b>\n\n"
-                f"{RULE}\nВыберите действие:")
+                f"{RULE}\n«Запустить выбранный город» переключит все аккаунты на этот город, остальные задания поставит на паузу.")
         return text, main_menu()
 
-    async def listing(self, user_id, page=0, active_only=False):
+    async def listing(self, user_id, page=0, active_only=False, city=None):
         from .views import page_slice
+        if city is None:
+            city = (await self.repo.ui.preferences(user_id)).selected_region
+        selected_regions = regions_for(city)
+        if not selected_regions:
+            raise ValueError("Неизвестный город")
         jobs = await self.repo.queue.list(user_id=user_id)
+        jobs = [job for job in jobs if job.region in selected_regions]
         accounts = {a.id: a for a in await self.repo.accounts(user_id)}
         if active_only:
             jobs = [j for j in jobs if j.status in {"pending", "running"} and j.account_id in accounts
@@ -30,8 +38,8 @@ class UiScreens:
         priority = {"running": 0, "pending": 1, "failed": 2, "paused": 3, "completed": 4, "cancelled": 5}
         jobs.sort(key=lambda j: (priority.get(j.status, 6), j.created_at, j.id))
         visible, page, pages = page_slice(jobs, page, 6)
-        lines = ["📋 <b>МОИ ЗАДАНИЯ</b>", RULE, f"Всего: {number(len(jobs))}", ""]
-        rows = []
+        lines = ["📋 <b>МОИ ЗАДАНИЯ</b>", RULE, f"🌍 {safe(region_name(city))}", f"Всего в этом разделе: {number(len(jobs))}", ""]
+        rows = [[("🏙 Москва", "jobs:scope:ru-2:0"), ("🌉 Петербург", "jobs:scope:spb:0"), ("Все", "jobs:scope:all:0")]]
         for job in visible:
             label = JOB_LABELS.get(job.status, "Состояние неизвестно")
             if job.status in {"running", "pending"} and job.account_id in accounts and accounts[job.account_id].scheduler_status in {"PAUSED", "STOPPED"}:
@@ -39,9 +47,9 @@ class UiScreens:
             lines.append(f"<b>#{safe(job.id[:8])}</b> · {safe(region_name(job.region))}\n<code>{safe(job.cidr)}</code> · {label}\n")
             rows.append([(f"#{job.id[:8]} · {job.cidr}", f"job:view:{job.id}")])
         if not jobs:
-            lines.append("Заданий пока нет. Выберите регион и начните поиск.")
+            lines.append("В этом разделе заданий пока нет. Проверьте другой город или начните поиск.")
         if pages > 1:
-            rows.append([("‹", f"jobs:page:{max(0,page-1)}"), (f"{page+1}/{pages}", "ui:noop"), ("›", f"jobs:page:{min(pages-1,page+1)}")])
+            rows.append([("‹", f"jobs:scope:{city}:{max(0,page-1)}"), (f"{page+1}/{pages}", "ui:noop"), ("›", f"jobs:scope:{city}:{min(pages-1,page+1)}")])
         rows += [[("🎯 Начать поиск", "hunt:start")], [("◀️ Главное меню", "home")]]
         return "\n".join(lines), keyboard(*rows)
 

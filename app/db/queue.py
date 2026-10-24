@@ -20,9 +20,23 @@ class DurableQueue:
     def __init__(self, sessions):
         self.sessions = sessions
 
-    async def enqueue(self, account, targets):
+    async def enqueue(self, account, targets, exclusive=False):
+        if not targets:
+            if exclusive:
+                raise ValueError("Выберите хотя бы одну доступную подсеть")
+            return
+        selected = {(target["region"], target["subnet_id"]) for target in targets}
         async with self.sessions() as s:
             await s.execute(text("BEGIN IMMEDIATE"))
+            if exclusive:
+                existing = list((await s.scalars(select(QueueJob).where(QueueJob.account_id == account.id,
+                    QueueJob.telegram_user_id == account.telegram_user_id, QueueJob.status.in_(["pending", "running"])))).all())
+                for job in existing:
+                    if (job.region, job.subnet_id) not in selected:
+                        previous = job.status
+                        job.status, job.updated_at = "paused", now()
+                        # Keep lease and operation intent: an in-flight POST may still finish.
+                        await transition(s, job, previous, now())
             for target in targets:
                 region, subnet_id, cidr = target["region"], target["subnet_id"], target["cidr"]
                 job = await s.scalar(select(QueueJob).where(QueueJob.account_id == account.id, QueueJob.region == region, QueueJob.subnet_id == subnet_id))
@@ -90,9 +104,12 @@ class DurableQueue:
             await s.commit()
             return job
 
-    async def change(self, job, **values):
+    async def change(self, job, require_running=False, **values):
         async with self.sessions() as s:
-            result = await s.execute(update(QueueJob).where(QueueJob.id == job.id, QueueJob.lease_token == job.lease_token, QueueJob.lease_until > now()).values(updated_at=now(), **values))
+            query = update(QueueJob).where(QueueJob.id == job.id, QueueJob.lease_token == job.lease_token, QueueJob.lease_until > now())
+            if require_running:
+                query = query.where(QueueJob.status == "running")
+            result = await s.execute(query.values(updated_at=now(), **values))
             if not result.rowcount:
                 raise LeaseLost(job.id)
             if "attempts" in values:
@@ -107,7 +124,7 @@ class DurableQueue:
         await self.change(job, lease_until=now() + timedelta(seconds=60))
 
     async def begin_operation(self, job, network_id):
-        await self.change(job, operation_id=uuid.uuid4().hex, network_id=network_id, attempts=job.attempts + 1)
+        await self.change(job, require_running=True, operation_id=uuid.uuid4().hex, network_id=network_id, attempts=job.attempts + 1)
 
     async def release(self, job, delay=30, error=None, clear_operation=False, failed=False):
         async with self.sessions() as s:

@@ -83,6 +83,14 @@ class UiRepository:
                 QueueJob.status.in_(["pending", "running"])).order_by(QueueJob.due_at, QueueJob.created_at, QueueJob.id))).all())
             return ids.index(job.id) + 1 if job.id in ids else None
 
+    async def active_by_city(self, user_id):
+        async with self.sessions() as s:
+            rows = await s.execute(select(QueueJob.region, func.count(QueueJob.id)).join(Account).where(
+                QueueJob.telegram_user_id == user_id, QueueJob.status.in_(["pending", "running"]),
+                Account.enabled, Account.scheduler_status.in_(["RUNNING", "RATE_LIMIT_COOLDOWN"])).group_by(QueueJob.region))
+            counts = dict(rows.all())
+            return {"ru-2": counts.get("ru-2", 0), "spb": sum(count for region, count in counts.items() if region != "ru-2")}
+
     async def history(self, user_id, region="all", job_id=None, page=0, size=5):
         async with self.sessions() as s:
             query = select(FoundIP).join(Account, Account.id == FoundIP.account_id).where(Account.telegram_user_id == user_id, FoundIP.region.in_(regions_for(region)))

@@ -50,8 +50,9 @@ def build_experience_router(repo, manager, admin_ids, client_factory, screens=No
     async def city(call):
         selected = call.data.split(":")[1]
         await repo.ui.preferences(call.from_user.id, selected_region=selected)
-        await edit_screen(call.message, f"✅ <b>РЕГИОН ВЫБРАН</b>\n{RULE}\n\n{safe(region_name(selected))}\nСуществующие задания сохраняют прежние регионы.",
-            keyboard([("🎯 Начать поиск", "hunt:start")], [("🌍 Выбрать регион", "ui:regions")], [("◀️ Главное меню", "home")]))
+        cities = await repo.ui.active_by_city(call.from_user.id)
+        await edit_screen(call.message, f"✅ <b>ГОРОД ВЫБРАН ДЛЯ ЗАПУСКА</b>\n{RULE}\n\n{safe(region_name(selected))}\n\nСейчас ищут: Москва — {cities['ru-2']}, Петербург — {cities['spb']}.\nНажмите «Запустить выбранный город», чтобы переключить все аккаунты. Задания другого города будут на паузе; история и IP сохранятся.",
+            keyboard([("🚀 Запустить выбранный город", "hunt:all")], [("➕ Добавить параллельно", f"hunt:add:{selected}")], [("🎯 Выбрать аккаунт и подсети", "hunt:start")], [("🌍 Выбрать регион", "ui:regions")], [("◀️ Главное меню", "home")]))
         await call.answer("Регион сохранён")
 
     @router.callback_query(F.data == "stats:view")

@@ -12,9 +12,11 @@ def build_jobs_router(repo, manager, admin_ids, live=None, screens=None):
 
     @router.callback_query(F.data == "task:list")
     @router.callback_query(F.data.regexp(r"^jobs:page:\d+$"))
+    @router.callback_query(F.data.regexp(r"^jobs:scope:(all|spb|ru-\d+):\d+$"))
     async def listing(call):
-        page = int(call.data.rsplit(":", 1)[-1]) if call.data.startswith("jobs:page:") else 0
-        await edit_screen(call.message, *(await screens.listing(call.from_user.id, page)))
+        page = int(call.data.rsplit(":", 1)[-1]) if call.data.startswith(("jobs:page:", "jobs:scope:")) else 0
+        city = call.data.split(":")[2] if call.data.startswith("jobs:scope:") else None
+        await edit_screen(call.message, *(await screens.listing(call.from_user.id, page, city=city)))
         await call.answer()
 
     @router.callback_query(F.data.regexp(r"^job:(view|pause|resume|stop|confirm):[a-f0-9]{32}$"))

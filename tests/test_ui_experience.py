@@ -555,3 +555,183 @@ async def test_legacy_stop_button_never_stops_other_city_jobs(ctx):
     await handler(router, 'legacy_task')(call(f'task:stop:{legacy.id}'))
     assert all(j.status == 'pending' for j in await repo.queue.list())
     assert (await repo.get_account(account.id)).scheduler_status == 'RUNNING'
+
+
+def scoped_manager(repo):
+    from app.hunter.account_manager import BurstSchedulerManager
+    manager = BurstSchedulerManager(repo, AsyncMock(), AsyncMock())
+    manager.recalculate_schedule = AsyncMock()
+    manager._ensure_scheduler = AsyncMock()
+    return manager
+
+
+@pytest.mark.asyncio
+async def test_start_all_defaults_to_saved_moscow_not_account_region(ctx):
+    _, repo, account, _ = ctx
+    assert account.region == 'ru-3'
+    await repo.ui.preferences(42, selected_region='ru-2')
+    manager = scoped_manager(repo)
+    assert await manager.start_all_accounts(42) == (1, [])
+    jobs = await repo.queue.list(user_id=42)
+    assert len(jobs) == 3
+    assert {j.region for j in jobs} == {'ru-2'}
+    assert {j.cidr for j in jobs} == {'5.178.85.0/24', '81.163.22.0/24', '81.163.23.0/24'}
+    manager.recalculate_schedule.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_first_single_account_start_uses_saved_city(ctx):
+    _, repo, account, _ = ctx
+    await repo.ui.preferences(42, selected_region='ru-2')
+    await scoped_manager(repo).start_account(account.id)
+    assert {j.region for j in await repo.queue.list()} == {'ru-2'}
+
+
+@pytest.mark.asyncio
+async def test_disabled_city_draft_does_not_pause_working_city(ctx):
+    _, repo, account, manager = ctx
+    await enqueue(repo, account, ('ru-3',))
+    draft = await repo.ui.create_draft(42, account.id, 'ru-2', [subnet('ru-2')['subnet_id']])
+    await repo.set_region_enabled('ru-2', False)
+    router = build_multisubnet_router(repo, manager, {42})
+    callback = call(f's:{draft.id}:save')
+    await handler(router, 'draft_action')(callback)
+    assert all(j.status == 'pending' and j.region == 'ru-3' for j in await repo.queue.list())
+    manager.start_account.assert_not_awaited()
+    assert 'выключена' in callback.answer.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_moscow_start_pauses_old_spb_preserving_ids_attempts_and_other_owners(ctx):
+    _, repo, account, _ = ctx
+    old = await enqueue(repo, account, ('ru-1', 'ru-3', 'ru-9'))
+    second = await repo.add_account(telegram_user_id=42, display_name='second', domain='d', username='u',
+        encrypted_password='encrypted', project_id='project', region='ru-3', scheduler_status='RUNNING')
+    old.extend(await enqueue(repo, second, ('ru-9',)))
+    in_flight = await repo.queue.claim(account.id)
+    await repo.queue.begin_operation(in_flight, 'old-network')
+    other = await repo.add_account(telegram_user_id=99, display_name='other', domain='d', username='u',
+        encrypted_password='encrypted', project_id='project', scheduler_status='RUNNING')
+    await enqueue(repo, other, ('ru-3',))
+    await repo.ui.preferences(42, selected_region='ru-2')
+    assert await scoped_manager(repo).start_all_accounts(42) == (2, [])
+    jobs = await repo.queue.list(user_id=42)
+    assert all(j.status == 'paused' for j in jobs if j.region != 'ru-2')
+    assert {j.id for j in jobs if j.region != 'ru-2'} == {j.id for j in old}
+    saved = await repo.queue.get(in_flight.id)
+    assert saved.operation_id == in_flight.operation_id and saved.lease_token == in_flight.lease_token
+    assert saved.attempts == 1 and saved.region == in_flight.region
+    assert all(j.status == 'pending' for j in await repo.queue.list(user_id=99))
+    assert await repo.ui.active_by_city(42) == {'ru-2': 6, 'spb': 0}
+
+
+@pytest.mark.asyncio
+async def test_parallel_city_start_keeps_moscow_running(ctx):
+    _, repo, account, _ = ctx
+    await repo.ui.preferences(42, selected_region='ru-2')
+    manager = scoped_manager(repo)
+    await manager.start_all_accounts(42)
+    original = {j.id for j in await repo.queue.list()}
+    await manager.start_all_accounts(42, selection='spb', exclusive=False)
+    jobs = await repo.queue.list()
+    assert original.issubset({j.id for j in jobs})
+    assert all(j.status == 'pending' for j in jobs)
+    assert await repo.ui.active_by_city(42) == {'ru-2': 3, 'spb': len([s for s in TARGET_SUBNETS if s['region'] != 'ru-2'])}
+
+
+@pytest.mark.asyncio
+async def test_no_moscow_targets_does_not_pause_existing_spb_or_report_success(ctx):
+    _, repo, account, _ = ctx
+    await enqueue(repo, account, ('ru-3',))
+    await repo.set_region_enabled('ru-2', False)
+    await repo.ui.preferences(42, selected_region='ru-2')
+    manager = scoped_manager(repo)
+    started, failed = await manager.start_all_accounts(42)
+    assert started == 0 and len(failed) == 1
+    assert all(j.status == 'pending' for j in await repo.queue.list())
+    assert {j.region for j in await repo.queue.list()} == {'ru-3'}
+    manager._ensure_scheduler.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_exclusive_subset_does_not_run_deselected_subnets(ctx):
+    _, repo, account, _ = ctx
+    await repo.queue.enqueue(account, [t for t in TARGET_SUBNETS])
+    chosen = subnet('ru-2')
+    await repo.queue.enqueue(account, [chosen], exclusive=True)
+    active = [j for j in await repo.queue.list() if j.status == 'pending']
+    assert len(active) == 1 and active[0].subnet_id == chosen['subnet_id']
+    job = await repo.queue.claim(account.id)
+    assert job.id == active[0].id
+    assert await repo.queue.claim(account.id) is None
+
+
+@pytest.mark.asyncio
+async def test_city_switch_after_status_check_fences_old_post(ctx):
+    from app.db.queue import LeaseLost
+    from app.hunter.durable import DurableBurst
+    _, repo, account, _ = ctx
+    await enqueue(repo, account, ('ru-3',))
+    job = await repo.queue.claim(account.id)
+    original = repo.queue.begin_operation
+    async def switch_before_post(job, network_id):
+        await repo.queue.enqueue(account, [subnet('ru-2')], exclusive=True)
+        await original(job, network_id)
+    repo.queue.begin_operation = switch_before_post
+    client = SimpleNamespace(resolve_network=AsyncMock(return_value='network'), create_floating_ip=AsyncMock())
+    with pytest.raises(LeaseLost):
+        await DurableBurst(repo, AsyncMock()).attempt(job, account, client)
+    client.create_floating_ip.assert_not_awaited()
+    saved = await repo.queue.get(job.id)
+    assert saved.status == 'paused' and saved.attempts == 0 and saved.operation_id is None
+
+
+@pytest.mark.asyncio
+async def test_already_sent_old_city_result_is_preserved_after_switch(ctx):
+    _, repo, account, _ = ctx
+    await enqueue(repo, account, ('ru-3',))
+    job = await repo.queue.claim(account.id)
+    await repo.queue.begin_operation(job, 'network')
+    await repo.queue.enqueue(account, [subnet('ru-2')], exclusive=True)
+    await repo.queue.complete(job, {'id': 'already-created', 'floating_ip_address': '87.228.101.5'})
+    assert (await repo.queue.get(job.id)).status == 'completed'
+    found = await repo.found(42)
+    assert len(found) == 1 and found[0].region == 'ru-3' and found[0].floating_ip_address == '87.228.101.5'
+    assert await repo.ui.active_by_city(42) == {'ru-2': 1, 'spb': 0}
+
+
+@pytest.mark.asyncio
+async def test_dashboard_separates_selection_from_active_city_and_list_filters(ctx):
+    _, repo, account, manager = ctx
+    await enqueue(repo, account, ('ru-3',))
+    await repo.ui.preferences(42, selected_region='ru-2')
+    screens = UiScreens(repo, manager)
+    dashboard, _ = await screens.dashboard(42)
+    assert 'Выбор для запуска' in dashboard and 'Москва — <b>0</b>, Петербург — <b>1</b>' in dashboard
+    selected_text, selected_markup = await screens.listing(42)
+    assert 'Всего в этом разделе: 0' in selected_text and '87.228.101.0/24' not in selected_text
+    all_text, all_markup = await screens.listing(42, city='all')
+    assert '87.228.101.0/24' in all_text
+    assert 'jobs:scope:spb:0' in callbacks(selected_markup)
+    assert_screen((dashboard, _))
+    assert_screen((all_text, all_markup))
+
+
+@pytest.mark.asyncio
+async def test_city_pause_and_selected_region_survive_database_restart(ctx):
+    db, repo, account, _ = ctx
+    await enqueue(repo, account, ('ru-3',))
+    await repo.ui.preferences(42, selected_region='ru-2')
+    await scoped_manager(repo).start_all_accounts(42)
+    snapshot = [(j.id, j.region, j.status) for j in await repo.queue.list()]
+    url = str(db.engine.url)
+    await db.close()
+    restarted = Database(url)
+    try:
+        await restarted.init()
+        repo2 = Repository(restarted.sessions)
+        await scoped_manager(repo2).restore()
+        assert [(j.id, j.region, j.status) for j in await repo2.queue.list()] == snapshot
+        assert await repo2.ui.active_by_city(42) == {'ru-2': 3, 'spb': 0}
+    finally:
+        await restarted.close()

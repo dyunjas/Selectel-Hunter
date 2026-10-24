@@ -5,6 +5,7 @@ from .keyboards import account_return, account_settings_keyboard, back, refresh_
 
 from .formatting import safe
 from .views import edit_screen, schedule_text, status_label
+from .presentation import region_name
 
 
 def build_scheduler_ui(repo, manager, admin_ids=None):
@@ -14,16 +15,26 @@ def build_scheduler_ui(repo, manager, admin_ids=None):
         router.callback_query.outer_middleware(AdminOnlyMiddleware(admin_ids))
 
     @router.callback_query(F.data == "hunt:all")
+    @router.callback_query(F.data.regexp(r"^hunt:add:(ru-2|spb)$"))
     async def start_all(call):
         accounts = await repo.accounts(call.from_user.id)
         if not accounts:
             await call.answer("Сначала добавьте хотя бы один аккаунт", show_alert=True)
             return
-        started, failed = await manager.start_all_accounts(call.from_user.id)
+        selection = (await repo.ui.preferences(call.from_user.id)).selected_region
+        parallel = call.data.startswith("hunt:add:")
+        if parallel:
+            selection = call.data.rsplit(":", 1)[1]
+        started, failed = await manager.start_all_accounts(call.from_user.id, selection=selection, exclusive=not parallel)
         text = f"🚀 <b>Запуск завершён</b>\n\nАккаунтов запущено: <b>{started}</b>"
         if failed:
             text += f"\nНе удалось запустить: <b>{len(failed)}</b>"
-        text += "\n\nВсе аккаунты работают в общем burst-планировщике."
+        text += f"\n🌍 <b>{safe(region_name(selection))}</b>"
+        if started:
+            text += "\n\nДругие города продолжают поиск параллельно." if parallel else "\n\nДругие задания успешно запущенных аккаунтов поставлены на паузу. Их история и результаты сохранены."
+            text += "\nУже отправленный запрос может завершиться; новые попытки выполняются в выбранном городе."
+        else:
+            text += "\n\nЗапуск не выполнен. Проверьте, включены ли регион и нужные подсети в настройках. Существующие задания сохранены."
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📋 Посмотреть расписание", callback_data="scheduler:view")],
             [InlineKeyboardButton(text="🎯 Подсети", callback_data="targets:view"), InlineKeyboardButton(text="🏠 Меню", callback_data="home")],

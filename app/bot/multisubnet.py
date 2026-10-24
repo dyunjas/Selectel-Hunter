@@ -60,9 +60,10 @@ def build_multisubnet_router(repo, manager, admin_ids=None, client_factory=None)
         if pages > 1:
             rows.append([("‹", f"s:{draft.id}:page:{max(0,page-1)}"), (f"{page+1}/{pages}", "ui:noop"), ("›", f"s:{draft.id}:page:{min(pages-1,page+1)}")])
         rows += [[("✅ Все", f"s:{draft.id}:all"), ("Снять выбор", f"s:{draft.id}:none")],
-                 [(f"🎯 Запустить · {len(selected)} подсетей", f"s:{draft.id}:save")],
+                 [(f"🎯 Запустить только выбранные · {len(selected)}", f"s:{draft.id}:save")],
+                 [("➕ Добавить параллельно", f"s:{draft.id}:add")],
                  [("🔄 Обновить подсети", f"s:{draft.id}:refresh")], [("◀️ К аккаунту", f"account:view:{account.id}")]]
-        await edit_screen(call.message, f"🎯 <b>ВЫБОР ПОДСЕТЕЙ</b>\n{RULE}\n\n🌍 {safe(region_name(draft.selection))}\nАккаунт: <b>{safe(account.display_name)}</b>\n\nКаждая подсеть получит отдельное задание в своём регионе.\nВыбор добавляет задания. Уже запущенные остановите в «Мои задания».\nВыбрано: <b>{len(selected)}</b> · страница {page+1}/{pages}", keyboard(*rows))
+        await edit_screen(call.message, f"🎯 <b>ВЫБОР ПОДСЕТЕЙ</b>\n{RULE}\n\n🌍 {safe(region_name(draft.selection))}\nАккаунт: <b>{safe(account.display_name)}</b>\n\nОбычный запуск оставит в поиске только выбранные подсети этого аккаунта, остальные поставит на паузу.\nДля одновременного поиска используйте «Добавить параллельно».\nВыбрано: <b>{len(selected)}</b> · страница {page+1}/{pages}", keyboard(*rows))
 
     async def show_selector(call, state, account, region):
         selected = {j.subnet_id for j in await repo.queue.list(account_id=account.id) if j.region in regions_for(region) and j.status in {"pending", "running", "paused"}}
@@ -81,7 +82,7 @@ def build_multisubnet_router(repo, manager, admin_ids=None, client_factory=None)
             await show_selector(call, state, account, region)
         await call.answer("Регион выбран")
 
-    @router.callback_query(F.data.regexp(r"^s:[a-f0-9]{12}:(toggle|page|all|none|save|refresh)(:[a-f0-9-]+)?$"))
+    @router.callback_query(F.data.regexp(r"^s:[a-f0-9]{12}:(toggle|page|all|none|save|add|refresh)(:[a-f0-9-]+)?$"))
     async def draft_action(call):
         parts = call.data.split(":")
         draft = await repo.ui.draft(parts[1], call.from_user.id)
@@ -104,13 +105,18 @@ def build_multisubnet_router(repo, manager, admin_ids=None, client_factory=None)
         elif action in {"all", "none"}:
             selected = allowed if action == "all" else set()
             await repo.ui.draft(draft.id, call.from_user.id, selected)
-        elif action == "save":
+        elif action in {"save", "add"}:
             if not selected:
                 await call.answer("Выберите хотя бы одну подсеть", show_alert=True)
                 return
-            await repo.queue.enqueue(account, [t for t in available if t["subnet_id"] in selected])
+            enabled = {t.subnet_id for t in await repo.enabled_targets(account.id)}
+            if not selected.issubset(enabled):
+                await call.answer("Часть подсетей выключена в общих настройках. Включите их или измените выбор. Текущий поиск сохранён.", show_alert=True)
+                return
+            await repo.queue.enqueue(account, [t for t in available if t["subnet_id"] in selected], exclusive=action == "save")
             await manager.start_account(account.id)
-            await edit_screen(call.message, f"🟢 <b>ПОИСК ЗАПУЩЕН</b>\n{RULE}\n\n{safe(region_name(draft.selection))}\nАккаунт: <b>{safe(account.display_name)}</b>\nПодсетей: <b>{len(selected)}</b>\n\nСтатус и управление — в разделе «Мои задания».", keyboard([("📋 Мои задания", "task:list")], [("◀️ Главное меню", "home")]))
+            mode = "Остальные задания этого аккаунта поставлены на паузу." if action == "save" else "Другие задания продолжают поиск параллельно."
+            await edit_screen(call.message, f"🟢 <b>ПОИСК ЗАПУЩЕН</b>\n{RULE}\n\n{safe(region_name(draft.selection))}\nАккаунт: <b>{safe(account.display_name)}</b>\nПодсетей: <b>{len(selected)}</b>\n\n{mode}\nСтатус и управление — в разделе «Мои задания».", keyboard([("📋 Мои задания", "task:list")], [("◀️ Главное меню", "home")]))
             await call.answer("Задания сохранены")
             return
         elif action == "refresh":
