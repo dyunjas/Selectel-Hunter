@@ -24,6 +24,11 @@ dist/
 *.sqlite
 *.sqlite3
 *.log
+*.db-*
+*.db.*.bak
+*.db.lock
+health.json
+health.tmp
 
 # IDE and OS files
 .vscode/

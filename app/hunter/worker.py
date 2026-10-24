@@ -21,7 +21,7 @@ class HunterWorker:
                     await self.repo.update_task(current.id, attempts=current.attempts + 1, last_attempt_at=datetime.now(timezone.utc).replace(tzinfo=None))
                     current.attempts += 1
                     try:
-                        result = await self.client.create_floating_ip(current.subnet_id)
+                        result = await self.client.create_floating_ip(current.region, current.subnet_id)
                     except SelectelError as exc:
                         await self.repo.update_task(current.id, last_error=exc.kind.value)
                         event_text = f"{exc.kind.value}: {exc}"

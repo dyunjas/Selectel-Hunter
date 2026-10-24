@@ -6,21 +6,20 @@ def safe(value):
     return escape(str(value if value is not None else "—"))
 
 
-def found_message(account, task, ip, fip_id, elapsed):
+def found_message(account, task, ip, fip_id, elapsed, job_id=None, found_at=None, offset=300):
+    from .presentation import region_name, timestamp, number, RULE
     region = getattr(task, "region", None) or "—"
-    external_network = REGIONS.get(region, {}).get("floating_network_id", "—")
     return (
-        "<b>✅ FLOATING IP НАЙДЕН</b>\n\n"
+        f"🎉 <b>НАЙДЕН НУЖНЫЙ IP!</b>\n{RULE}\n\n"
         f"<blockquote><b>Аккаунт</b>  {safe(account.display_name if account else task.account_id)}\n"
-        f"<b>Регион</b>  <code>{safe(region)}</code>\n"
+        f"<b>Регион</b>  {safe(region_name(region))}\n"
         f"<b>Подсеть</b>  <code>{safe(task.subnet_cidr)}</code>\n"
-        f"<b>Subnet UUID</b>  <code>{safe(task.subnet_id)}</code>\n"
-        f"<b>External network</b>  <code>{safe(external_network)}</code>\n"
-        f"<b>IP</b>  <code>{safe(ip)}</code>\n"
-        f"<b>Floating IP ID</b>  <code>{safe(fip_id)}</code></blockquote>\n"
-        f"Попытка  <b>{task.attempts}</b>\n"
-        f"Время поиска  <b>{elapsed:.1f} сек.</b>\n\n"
-        "<i>Задача остановлена автоматически. IP не удалён.</i>"
+        f"\n✅ <b>IP</b>  <code>{safe(ip)}</code></blockquote>\n"
+        f"🎯 Задание: <b>#{safe(job_id[:8] if job_id else str(getattr(task, 'id', '—')))}</b>\n"
+        f"🕒 Время: {timestamp(found_at or getattr(task, 'finished_at', None), offset)}\n"
+        f"🔄 Попыток до находки: <b>{number(task.attempts)}</b>\n\n"
+        "💾 Выделение IP подтверждено Selectel. Результат сохранён в БД.\n"
+        "<i>Задание завершено, IP сохранён.</i>"
     )
 
 

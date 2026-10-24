@@ -125,6 +125,9 @@ class AccountBurstWorker:
         return "continue"
 
     async def _run_burst(self, account):
+        if getattr(self.repo, "queue", None) is not None:
+            from .durable import DurableBurst
+            return await DurableBurst(self.repo, self.client_factory).run(account)
         clients = []
         try:
             return await self._run_burst_with_client(account, clients)

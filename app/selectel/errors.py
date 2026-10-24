@@ -2,6 +2,7 @@ from enum import StrEnum
 
 
 class ErrorType(StrEnum):
+    QUOTA_EXCEEDED = "QUOTA_EXCEEDED"
     NO_FREE_IP = "NO_FREE_IP"; AUTH_ERROR = "AUTH_ERROR"; PERMISSION_ERROR = "PERMISSION_ERROR"; RATE_LIMIT = "RATE_LIMIT"; NETWORK_ERROR = "NETWORK_ERROR"; SERVER_ERROR = "SERVER_ERROR"; UNKNOWN = "UNKNOWN"
 
 
@@ -15,6 +16,8 @@ class ErrorClassifier:
     def classify(status: int, payload: dict) -> ErrorType:
         error = payload.get("NeutronError", {}) if isinstance(payload, dict) else {}
         text = f"{error.get('type', '')} {error.get('message', '')}".lower()
+        if any(x in text for x in ("overquota", "quota exceeded", "quotaexceeded")):
+            return ErrorType.QUOTA_EXCEEDED
         if status == 409 or any(x in text for x in (
             "ipaddressgenerationfailure",
             "externalipaddressexhausted",

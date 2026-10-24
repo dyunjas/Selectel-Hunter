@@ -185,3 +185,38 @@ async def test_cancellation_is_not_retried(monkeypatch):
     with pytest.raises(asyncio.CancelledError):
         await client.get_floating_ips()
     client._network_retry_delay.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_expiring_token_refreshed_before_request(monkeypatch):
+    import time
+    client, sessions = client_with_sessions(monkeypatch, [Response()])
+    client.token_expires_at = time.time() + 10
+    async def login():
+        client.token = "fresh"
+        client.token_expires_at = time.time() + 3600
+    client.authenticate = AsyncMock(side_effect=login)
+    await client.get_floating_ips("ru-2")
+    client.authenticate.assert_awaited_once()
+    args, kwargs = sessions[0].calls[0]
+    assert "ru-2.cloud.api.selcloud.ru" in args[1]
+    assert kwargs["headers"]["X-Auth-Token"] == "fresh"
+
+
+@pytest.mark.asyncio
+async def test_get_429_respects_retry_after(monkeypatch):
+    client, sessions = client_with_sessions(monkeypatch, [Response()])
+    replies = iter([Response(status=429, headers={"Retry-After": "120"}), Response(payload={"floatingips": []})])
+    sessions[0].request = lambda *args, **kwargs: next(replies)
+    sleep = AsyncMock()
+    monkeypatch.setattr("app.selectel.client.asyncio.sleep", sleep)
+    assert await client.get_floating_ips("ru-2") == {"floatingips": []}
+    assert any(call.args[0] >= 120 for call in sleep.call_args_list)
+
+
+@pytest.mark.asyncio
+async def test_unknown_region_fails_before_any_request(monkeypatch):
+    client, sessions = client_with_sessions(monkeypatch, [Response()])
+    with pytest.raises(ValueError):
+        await client.get_floating_ips("ru-unknown")
+    assert sessions[0].calls == []

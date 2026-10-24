@@ -176,3 +176,94 @@ class Attempt(Base):
     http_status: Mapped[int | None] = mapped_column(Integer)
     error_type: Mapped[str | None] = mapped_column(String(80))
     elapsed_ms: Mapped[int | None] = mapped_column(Integer)
+
+
+class QueueJob(Base):
+    __tablename__ = "queue_jobs"
+    __table_args__ = (UniqueConstraint("account_id", "region", "subnet_id", name="uq_queue_target"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), index=True)
+    telegram_user_id: Mapped[int] = mapped_column(Integer, index=True)
+    region: Mapped[str] = mapped_column(String(40))
+    subnet_id: Mapped[str] = mapped_column(String(36))
+    cidr: Mapped[str] = mapped_column(String(50))
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    errors: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    due_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    lease_token: Mapped[str | None] = mapped_column(String(32))
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    operation_id: Mapped[str | None] = mapped_column(String(32))
+    network_id: Mapped[str | None] = mapped_column(String(36))
+    resource_json: Mapped[str | None] = mapped_column(Text)
+    found_ip: Mapped[str | None] = mapped_column(String(64))
+    found_id: Mapped[str | None] = mapped_column(String(100))
+
+
+class NotificationOutbox(Base):
+    __tablename__ = "notification_outbox"
+    __table_args__ = (UniqueConstraint("job_id", "event_type", name="uq_outbox_event"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job_id: Mapped[str] = mapped_column(ForeignKey("queue_jobs.id", ondelete="CASCADE"))
+    event_type: Mapped[str] = mapped_column(String(80), default="FOUND")
+    payload: Mapped[str] = mapped_column(Text)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    due_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class UserPreferences(Base):
+    __tablename__ = "user_preferences"
+    telegram_user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    selected_region: Mapped[str] = mapped_column(String(40), default="spb")
+    utc_offset_minutes: Mapped[int] = mapped_column(Integer, default=300)
+    refresh_seconds: Mapped[int] = mapped_column(Integer, default=20)
+
+
+class JobUiState(Base):
+    """Presentation telemetry; never participates in claim/lease decisions."""
+    __tablename__ = "job_ui_states"
+    job_id: Mapped[str] = mapped_column(ForeignKey("queue_jobs.id", ondelete="CASCADE"), primary_key=True)
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime)
+    paused_at: Mapped[datetime | None] = mapped_column(DateTime)
+    pause_reason: Mapped[str | None] = mapped_column(String(100))
+    active_since: Mapped[datetime | None] = mapped_column(DateTime)
+    active_seconds: Mapped[float] = mapped_column(Float, default=0)
+    timing_complete: Mapped[bool] = mapped_column(Boolean, default=False)
+    problem_type: Mapped[str | None] = mapped_column(String(80))
+    event_sequence: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class JobOperation(Base):
+    __tablename__ = "job_operations"
+    operation_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    job_id: Mapped[str] = mapped_column(ForeignKey("queue_jobs.id", ondelete="CASCADE"), index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+
+
+class ResourceObservation(Base):
+    __tablename__ = "resource_observations"
+    found_id: Mapped[int] = mapped_column(ForeignKey("found_ips.id", ondelete="CASCADE"), primary_key=True)
+    status: Mapped[str] = mapped_column(String(40))
+    checked_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+class SubnetDraft(Base):
+    __tablename__ = "subnet_drafts"
+    id: Mapped[str] = mapped_column(String(12), primary_key=True)
+    telegram_user_id: Mapped[int] = mapped_column(Integer, index=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"))
+    selection: Mapped[str] = mapped_column(String(40))
+    selected_json: Mapped[str] = mapped_column(Text, default="[]")
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+class NotificationCooldown(Base):
+    """Delivery metadata for the existing outbox, shared across restarts."""
+    __tablename__ = "notification_cooldowns"
+    key: Mapped[str] = mapped_column(String(150), primary_key=True)
+    sent_at: Mapped[datetime] = mapped_column(DateTime)

@@ -7,8 +7,11 @@ from .formatting import safe
 from .views import edit_screen, schedule_text, status_label
 
 
-def build_scheduler_ui(repo, manager):
+def build_scheduler_ui(repo, manager, admin_ids=None):
     router = Router()
+    if admin_ids is not None:
+        from .multisubnet import AdminOnlyMiddleware
+        router.callback_query.outer_middleware(AdminOnlyMiddleware(admin_ids))
 
     @router.callback_query(F.data == "hunt:all")
     async def start_all(call):
@@ -174,7 +177,8 @@ def build_scheduler_ui(repo, manager):
         snapshot = await manager.get_scheduler_snapshot(call.from_user.id)
         global_active_count = sum(manager._active(account) for account in await repo.all_accounts())
         page = int(call.data.rsplit(":", 1)[1]) if call.data.startswith("scheduler:page:") else 0
-        text, visible, page, pages = schedule_text(snapshot, settings.burst_cooldown, global_active_count, page)
+        offset = (await repo.ui.preferences(call.from_user.id)).utc_offset_minutes if getattr(repo, "ui", None) else 300
+        text, visible, page, pages = schedule_text(snapshot, settings.burst_cooldown, global_active_count, page, offset)
         await edit_screen(call.message, text, schedule_controls(visible, page, pages))
         await call.answer()
 

@@ -29,12 +29,12 @@ def short_name(name, limit=48):
     return safe(name[:limit - 1] + "…" if len(name) > limit else name)
 
 
-def local_time(value):
+def local_time(value, offset=300):
     if not value:
         return "не запланирован"
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
-    return value.astimezone(DISPLAY_TIMEZONE).strftime("%d.%m %H:%M:%S")
+    return value.astimezone(timezone(timedelta(minutes=offset))).strftime("%d.%m %H:%M:%S")
 
 
 def page_slice(items, page, size=SCHEDULE_PAGE_SIZE):
@@ -45,6 +45,8 @@ def page_slice(items, page, size=SCHEDULE_PAGE_SIZE):
 
 async def edit_screen(message, text, reply_markup):
     """Refreshing an unchanged screen should still acknowledge the button."""
+    if getattr(message, "html_text", None) == text and getattr(message, "reply_markup", None) == reply_markup:
+        return
     try:
         await message.edit_text(text, reply_markup=reply_markup)
     except TelegramBadRequest as exc:
@@ -86,7 +88,7 @@ def dashboard_text(snapshot, period, global_active_count, target_count):
     return "\n".join(lines)
 
 
-def schedule_text(snapshot, period, global_active_count, page=0):
+def schedule_text(snapshot, period, global_active_count, page=0, offset=300):
     queue = snapshot["queue"]
     visible, page, pages = page_slice(queue, page)
     running = set(snapshot["running_account_ids"])
@@ -98,32 +100,33 @@ def schedule_text(snapshot, period, global_active_count, page=0):
     ]
     if global_active_count:
         lines.append(f"Между запусками: <b>{period / global_active_count:.2f} сек</b> ({global_active_count} аккаунтов)")
-    lines += ["Ответы других аккаунтов не задерживают запуск.", "Время: ЕКБ (UTC+5).", ""]
+    from .presentation import timezone_name
+    lines += ["Ответы других аккаунтов не задерживают запуск.", f"Время: {timezone_name(offset)}.", ""]
     for position, item in enumerate(visible, page * SCHEDULE_PAGE_SIZE + 1):
         account = item["account"]
         lines.append(f"<b>{position}. {short_name(account.display_name)}</b> · {status_label(item['status'])}")
         if account.id in running:
             lines.append("   BURST выполняется, ожидаются ответы")
         elif account.next_cycle_at:
-            lines.append(f"   Следующий старт: <b>{local_time(account.next_cycle_at)}</b>")
+            lines.append(f"   Следующий старт: <b>{local_time(account.next_cycle_at, offset)}</b>")
         if account.scheduler_status == "RATE_LIMIT_COOLDOWN" and account.cooldown_until:
-            lines.append(f"   Пауза API до {local_time(account.cooldown_until)}")
+            lines.append(f"   Пауза API до {local_time(account.cooldown_until, offset)}")
         lines.append("")
     if not queue:
         lines.append("Аккаунтов пока нет. Добавьте первый в разделе «Аккаунты».")
-    lines.append(f"Страница {page + 1}/{pages} · обновлено {datetime.now(DISPLAY_TIMEZONE):%H:%M:%S}")
+    lines.append(f"Страница {page + 1}/{pages} · обновлено {datetime.now(timezone(timedelta(minutes=offset))):%H:%M:%S}")
     return "\n".join(lines), visible, page, pages
 
 
 HELP_TEXT = (
     "ℹ️ <b>Как пользоваться</b>\n\n"
     "1. <b>Аккаунты → Добавить</b>: введите данные Selectel и, при необходимости, прокси.\n"
-    "2. <b>Подсети</b> и <b>Регионы</b>: включите нужные направления поиска. Эти настройки общие для всех аккаунтов.\n"
+    "2. <b>Запустить ловлю IP</b>: выберите аккаунт, регион и одну или несколько подсетей. Каждая выбранная подсеть получает отдельное задание.\n"
     "3. <b>Запустить все</b> или <b>Выбрать аккаунт</b>: начните поиск.\n"
-    "4. <b>Расписание</b>: смотрите ближайшие старты, обновляйте экран и открывайте карточки аккаунтов.\n\n"
+    "4. <b>Мои задания</b>: статус, ошибки, пауза, продолжение и остановка по отдельной подсети. <b>Расписание</b> показывает ближайшие старты аккаунтов.\n\n"
     "<b>Как работает BURST</b>\n"
     "Период задаётся в «Настройках поиска». Интервал между стартами = период / число активных аккаунтов. "
     "Ожидание ответов не задерживает другие аккаунты; дополнительной паузы после завершения нет.\n\n"
     "Найденные адреса доступны в разделе «Найденные IP». Временные сетевые ошибки не останавливают поиск.\n\n"
-    "/start — главный экран · /status — состояние · /help — помощь · /cancel — отмена ввода"
+    "/start — главный экран · /status — активные задания · /stats — статистика · /help — помощь · /cancel — отмена ввода"
 )

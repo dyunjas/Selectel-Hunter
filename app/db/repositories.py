@@ -12,6 +12,10 @@ def now():
 class Repository:
     def __init__(self, sessions: async_sessionmaker):
         self.sessions = sessions
+        from .queue import DurableQueue
+        self.queue = DurableQueue(sessions)
+        from .ui import UiRepository
+        self.ui = UiRepository(sessions)
 
     async def scheduler_settings(self):
         async with self.sessions() as s:
@@ -61,6 +65,23 @@ class Repository:
 
     async def update_account(self, account_id: int, **values):
         async with self.sessions() as s:
+            if values.get("scheduler_status") in {"PAUSED", "STOPPED", "RUNNING"}:
+                from .ui_events import ui_state, stop_clock, event
+                from .models import QueueJob
+                account = await s.get(Account, account_id)
+                previous = account.scheduler_status if account else None
+                status = values["scheduler_status"]
+                if status != previous and (status in {"PAUSED", "STOPPED"} or previous in {"PAUSED", "STOPPED"}):
+                    jobs = list((await s.scalars(select(QueueJob).where(QueueJob.account_id == account_id, QueueJob.status.in_(["pending", "running"])))).all())
+                    for job in jobs:
+                        state = await ui_state(s, job)
+                        if status in {"PAUSED", "STOPPED"}:
+                            stop_clock(state, now())
+                            state.paused_at, state.pause_reason = now(), "account"
+                        else:
+                            state.active_since = state.active_since or now()
+                            state.paused_at = state.pause_reason = None
+                        await event(s, job, state, {"PAUSED": "PAUSED", "STOPPED": "STOPPED", "RUNNING": "RESUMED"}[status], now())
             await s.execute(update(Account).where(Account.id == account_id).values(**values)); await s.commit()
 
     async def apply_schedule(self, entries):
@@ -145,6 +166,25 @@ class Repository:
         async with self.sessions() as s:
             return list((await s.scalars(select(TargetSubnet).order_by(TargetSubnet.order_index, TargetSubnet.subnet_id))).all())
 
+    async def refresh_pools(self, region, pools):
+        from ipaddress import ip_network
+        if region not in REGIONS:
+            raise ValueError("Unknown region")
+        async with self.sessions() as s:
+            for pool in pools:
+                subnet_id, cidr = pool.get("subnet_id") or pool.get("id"), pool.get("cidr")
+                if not subnet_id or not cidr:
+                    continue
+                cidr = str(ip_network(cidr))
+                existing = await s.get(TargetSubnet, subnet_id)
+                if existing and existing.region != region:
+                    raise ValueError("Subnet already belongs to another region")
+                if existing:
+                    existing.cidr = cidr
+                else:
+                    s.add(TargetSubnet(subnet_id=subnet_id, cidr=cidr, region=region, enabled=True, order_index=1000))
+            await s.commit()
+
     async def disable_account_target(self, account_id: int, subnet_id: str):
         async with self.sessions() as s:
             state = await s.scalar(select(AccountTargetState).where(AccountTargetState.account_id == account_id, AccountTargetState.subnet_id == subnet_id))
@@ -192,12 +232,8 @@ class Repository:
 
     async def account_attempt_stats(self, account_id: int):
         async with self.sessions() as s:
-            rows = await s.execute(select(Attempt.result, Attempt.subnet_id).where(Attempt.account_id == account_id))
-            stats = {}
-            for result, subnet_id in rows.all():
-                key = str(result)
-                stats[key] = stats.get(key, 0) + 1
-            return stats
+            rows = await s.execute(select(Attempt.result, func.count(Attempt.id)).where(Attempt.account_id == account_id).group_by(Attempt.result))
+            return {str(result): count for result, count in rows.all()}
 
     async def account_statistics(self, account_id: int, since=None):
         async with self.sessions() as s:

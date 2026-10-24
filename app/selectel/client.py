@@ -1,4 +1,6 @@
-import asyncio, logging, random
+import asyncio, logging, random, os, time
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any
 import aiohttp
 try:
@@ -29,6 +31,8 @@ class SelectelClient:
         self.session: aiohttp.ClientSession | None = None; self.token: str | None = None
         self.socks_proxy = bool(proxy and proxy.lower().startswith(("socks4://", "socks4a://", "socks5://", "socks5h://")))
         self._request_lock = asyncio.Lock()
+        self.token_expires_at = None
+        self._last_request = 0.0
 
     async def open(self):
         if self.session is None or self.session.closed:
@@ -43,8 +47,9 @@ class SelectelClient:
                 connector=connector,
                 timeout=aiohttp.ClientTimeout(
                     total=self.api_timeout,
-                    connect=self.api_timeout,
-                    sock_connect=self.api_timeout,
+                    connect=float(os.getenv("API_CONNECT_TIMEOUT", str(self.api_timeout))),
+                    sock_connect=float(os.getenv("API_CONNECT_TIMEOUT", str(self.api_timeout))),
+                    sock_read=float(os.getenv("API_READ_TIMEOUT", str(self.api_timeout))),
                 ),
             )
 
@@ -78,6 +83,8 @@ class SelectelClient:
                         raise SelectelError(ErrorClassifier.classify(response.status, payload), reason, status=response.status)
                     self.token = response.headers.get("X-Subject-Token") or payload.get("token", {}).get("id")
                     if not self.token: raise SelectelError(ErrorType.AUTH_ERROR, "Authentication token missing")
+                    expires = payload.get("token", {}).get("expires_at")
+                    self.token_expires_at = datetime.fromisoformat(expires.replace("Z", "+00:00")).timestamp() if expires else None
                     return self.token
             except (aiohttp.ClientError, asyncio.TimeoutError, *PROXY_ERRORS) as exc:
                 await self._reset_connection()
@@ -101,7 +108,11 @@ class SelectelClient:
             return await self._request_unlocked(method, path, region, **kwargs)
 
     async def _request_unlocked(self, method: str, path: str, region: str | None = None, **kwargs) -> Any:
-        if not self.token: await self.authenticate()
+        selected_region = region or self.region
+        if selected_region not in REGIONS:
+            raise ValueError(f"Unsupported region: {selected_region}")
+        if not self.token or (self.token_expires_at and self.token_expires_at <= time.time() + 60):
+            await self.authenticate()
         auth_retry = False
         network_attempt = 0
         while True:
@@ -111,11 +122,17 @@ class SelectelClient:
             headers = {"X-Auth-Token": self.token, "Content-Type": "application/json"}
             if self.proxy and not self.socks_proxy: kwargs["proxy"] = self.proxy
             try:
-                endpoint = REGIONS.get(region or self.region, REGIONS.get(self.region, REGIONS["ru-3"]))["network_api_url"]
+                interval = max(0.0, float(os.getenv("API_REQUEST_INTERVAL", "0.3")))
+                await asyncio.sleep(max(0.0, self._last_request + interval - time.monotonic()))
+                self._last_request = time.monotonic()
+                endpoint = REGIONS[selected_region]["network_api_url"]
                 async with self.session.request(method, f"{endpoint.rstrip('/')}/{path.lstrip('/')}", headers=headers, **kwargs) as response:
                     if response.status == 204:
                         return {}
-                    payload = await response.json(content_type=None)
+                    try:
+                        payload = await response.json(content_type=None)
+                    except (ValueError, aiohttp.ContentTypeError):
+                        payload = {}
                     if response.status == 401 and not auth_retry:
                         # После изменения IAM-ролей старый Keystone token может
                         # продолжать жить, поэтому один раз перевыпускаем его.
@@ -128,7 +145,18 @@ class SelectelClient:
                         reason = neutron.get("message") or payload.get("error", {}).get("message") or "Selectel API request failed"
                         error_type = neutron.get("type")
                         if error_type: reason = f"{error_type}: {reason}"
-                        raise SelectelError(ErrorClassifier.classify(response.status, payload), reason, float(retry) if retry else None, response.status)
+                        retry_seconds = None
+                        if retry:
+                            try:
+                                retry_seconds = max(0.0, float(retry))
+                            except ValueError:
+                                retry_seconds = max(0.0, parsedate_to_datetime(retry).timestamp() - time.time())
+                        # Resource POSTs are reconciled by the durable queue, never retried blindly.
+                        if method.upper() in {"GET", "HEAD", "DELETE"} and (response.status == 429 or response.status >= 500) and network_attempt + 1 < self.NETWORK_RETRIES:
+                            network_attempt += 1
+                            await asyncio.sleep(max(retry_seconds or 0, random.uniform(0.5, 1.5) * 2 ** network_attempt))
+                            continue
+                        raise SelectelError(ErrorClassifier.classify(response.status, payload), reason, retry_seconds, response.status)
                     return payload
             except (aiohttp.ClientError, asyncio.TimeoutError, *PROXY_ERRORS) as exc:
                 await self._reset_connection()
@@ -148,15 +176,24 @@ class SelectelClient:
 
     async def validate_account(self): return await self._request("GET", "floatingip_pools")
 
-    async def create_floating_ip(self, region: str, subnet_id: str | None = None):
+    async def create_floating_ip(self, region: str, subnet_id: str | None = None, *, description=None, network_id=None):
         if subnet_id is None:
             subnet_id, region = region, self.region
         region_config = REGIONS[region]
+        network_id = network_id or region_config["floating_network_id"]
+        body = {"floating_network_id": network_id, "subnet_id": subnet_id}
+        if description:
+            body["description"] = description
         try:
-            return (await self._request("POST", "floatingips", region=region, json={"floatingip": {"floating_network_id": region_config["floating_network_id"], "subnet_id": subnet_id}})).get("floatingip", {})
+            return (await self._request("POST", "floatingips", region=region, json={"floatingip": body})).get("floatingip", {})
         except SelectelError as exc:
             raise SelectelError(exc.kind, f"{exc}; region={region}; floating_network_id={region_config['floating_network_id']}; subnet_id={subnet_id}", exc.retry_after, exc.status) from exc
 
-    async def get_floating_ips(self): return await self._request("GET", "floatingips")
-    async def get_floatingip_pools(self): return await self._request("GET", "floatingip_pools")
-    async def delete_floating_ip(self, fip_id: str): return await self._request("DELETE", f"floatingips/{fip_id}")
+    async def get_floating_ips(self, region=None): return await self._request("GET", "floatingips", region=region)
+    async def get_floatingip_pools(self, region=None): return await self._request("GET", "floatingip_pools", region=region)
+    async def get_floating_ip(self, fip_id, region): return (await self._request("GET", f"floatingips/{fip_id}", region=region)).get("floatingip", {})
+    async def delete_floating_ip(self, fip_id: str, region=None): return await self._request("DELETE", f"floatingips/{fip_id}", region=region)
+
+    async def resolve_network(self, region, subnet_id):
+        # The network belongs to the region, independently of the selected subnet.
+        return REGIONS[region]["floating_network_id"]

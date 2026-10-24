@@ -11,6 +11,9 @@ EnvironmentFile=/opt/selectel-ip-hunter/.env
 ExecStart=/opt/selectel-ip-hunter/venv/bin/python -m app.main
 Restart=always
 RestartSec=5
+TimeoutStopSec=45
+KillSignal=SIGINT
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target

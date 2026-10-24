@@ -1,4 +1,8 @@
-from sqlalchemy import text
+import asyncio
+import sqlite3
+from pathlib import Path
+from datetime import datetime
+from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from .models import Base
 from app.config.regions import REGIONS
@@ -7,10 +11,31 @@ from app.config.subnets import TARGET_SUBNETS
 
 class Database:
     def __init__(self, url: str):
-        self.engine = create_async_engine(url, future=True)
+        self.engine = create_async_engine(url, future=True, connect_args={"timeout": 30} if url.startswith("sqlite") else {})
+        if url.startswith("sqlite"):
+            @event.listens_for(self.engine.sync_engine, "connect")
+            def configure_connection(connection, _):
+                cursor = connection.cursor()
+                cursor.execute("PRAGMA foreign_keys=ON")
+                cursor.execute("PRAGMA busy_timeout=30000")
+                cursor.execute("PRAGMA synchronous=FULL")
+                cursor.close()
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False, class_=AsyncSession)
 
     async def init(self):
+        if self.engine.url.drivername == "sqlite+aiosqlite":
+            path = self.engine.url.database
+            if path and path != ":memory:" and Path(path).exists():
+                def backup():
+                    with sqlite3.connect(path) as source:
+                        if source.execute("PRAGMA user_version").fetchone()[0] < 3:
+                            target = f"{path}.before-v3-{datetime.utcnow():%Y%m%d%H%M%S%f}.bak"
+                            with sqlite3.connect(target) as destination:
+                                source.backup(destination)
+                await asyncio.to_thread(backup)
+            async with self.engine.connect() as conn:
+                await conn.execute(text("PRAGMA journal_mode=WAL"))
+                await conn.commit()
         async with self.engine.begin() as conn:
             if self.engine.url.drivername == "sqlite+aiosqlite":
                 await conn.execute(text("PRAGMA foreign_keys=ON"))
@@ -88,6 +113,7 @@ class Database:
                         text("UPDATE account_subnets SET region = :region WHERE subnet_id = :subnet_id"),
                         {"region": item["region"], "subnet_id": item["subnet_id"]},
                     )
+                await conn.execute(text("PRAGMA user_version=3"))
 
     def session(self):
         return self.sessions()

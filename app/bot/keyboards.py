@@ -3,13 +3,12 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 def main_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="👤 Аккаунты", callback_data="account:list"), InlineKeyboardButton(text="🚀 Запустить все", callback_data="hunt:all")],
-        [InlineKeyboardButton(text="▶️ Выбрать аккаунт для запуска", callback_data="hunt:start")],
-        [InlineKeyboardButton(text="📊 Расписание", callback_data="scheduler:view"), InlineKeyboardButton(text="🎯 Подсети", callback_data="targets:view")],
-        [InlineKeyboardButton(text="🌍 Регионы", callback_data="regions:view"), InlineKeyboardButton(text="✅ Найденные IP", callback_data="found:list")],
-        [InlineKeyboardButton(text="⚙️ Настройки поиска", callback_data="scheduler:settings"), InlineKeyboardButton(text="📈 Статистика", callback_data="stats:view")],
-        [InlineKeyboardButton(text="🔔 Уведомления", callback_data="notifications:global"), InlineKeyboardButton(text="ℹ️ Помощь", callback_data="help")],
-        [InlineKeyboardButton(text="🔄 Обновить статус", callback_data="home")],
+        [InlineKeyboardButton(text="🌍 Выбрать регион", callback_data="ui:regions")],
+        [InlineKeyboardButton(text="🎯 Начать поиск", callback_data="hunt:start")],
+        [InlineKeyboardButton(text="📋 Мои задания", callback_data="task:list"), InlineKeyboardButton(text="✅ История IP", callback_data="found:list")],
+        [InlineKeyboardButton(text="📊 Статистика", callback_data="stats:view"), InlineKeyboardButton(text="⚙️ Настройки", callback_data="ui:settings")],
+        [InlineKeyboardButton(text="👤 Аккаунты", callback_data="account:list"), InlineKeyboardButton(text="🗓 Расписание", callback_data="scheduler:view")],
+        [InlineKeyboardButton(text="🚀 Запустить все", callback_data="hunt:all"), InlineKeyboardButton(text="ℹ️ Помощь", callback_data="help")],
     ])
 
 

@@ -11,6 +11,7 @@ from app.config.regions import REGIONS
 from .keyboards import account_actions, account_stats_periods, accounts, back, delete_confirmation, found_pages, hunt_accounts, main_menu, notification_settings, region_picker, subnets, task_actions, task_list as task_list_keyboard, wizard_controls
 from .formatting import safe
 from .views import HELP_TEXT, edit_screen, local_time, overview, page_slice, status_label
+from .presentation import timezone_name, RULE, friendly_error
 
 back_menu = back
 
@@ -158,13 +159,15 @@ def build_router(repo, manager, secret_box, client_factory, admin_ids=None, bot=
         if not account or account.telegram_user_id != call.from_user.id: await call.answer("Аккаунт не найден", show_alert=True); return
         stats = await repo.account_attempt_stats(account.id)
         targets = await repo.enabled_targets(account.id)
-        next_burst = local_time(account.next_cycle_at)
+        offset = (await repo.ui.preferences(call.from_user.id)).utc_offset_minutes if getattr(repo, "ui", None) else 300
+        next_burst = local_time(account.next_cycle_at, offset)
+        target_count = len([j for j in await repo.queue.list(account_id=account.id) if j.status in {"pending", "running"}]) if getattr(repo, "queue", None) else len(targets)
         await edit_screen(call.message,
-            f"👤 <b>{safe(account.display_name)}</b>\n\n"
+            f"👤 <b>{safe(account.display_name)}</b>\n{RULE}\n\n"
             f"{status_label(account.scheduler_status)}\n"
-            f"Следующий BURST: <b>{next_burst}</b> · ЕКБ (UTC+5)\n"
+            f"Следующий запуск: <b>{next_burst}</b> · {timezone_name(offset)}\n"
             f"Прокси: <b>{'✅ подключён' if account.encrypted_proxy_url else '❌ не настроен'}</b>\n"
-            f"Целей в очереди: <b>{len(targets)}</b>\n\n"
+            f"Заданий в очереди: <b>{target_count}</b>\n\n"
             "<b>Краткая статистика</b>\n"
             f"Запросов: <b>{sum(stats.values())}</b>\n"
             f"Найдено IP: <b>{stats.get('FOUND', 0)}</b>\n"
@@ -186,7 +189,8 @@ def build_router(repo, manager, secret_box, client_factory, admin_ids=None, bot=
             await client.validate_account()
             result = "✅ Подключение работает. Авторизация и API доступны."
         except Exception as exc:
-            result = f"❌ Проверка не пройдена.\n\n<code>{type(exc).__name__}: {exc}</code>"
+            kind = getattr(getattr(exc, "kind", None), "value", "UNKNOWN")
+            result = f"❌ Проверка не пройдена.\n\n{friendly_error(kind)}"
         await call.message.edit_text(
             f"🌐 <b>Проверка подключения</b>\n\nАккаунт: <b>{safe(account.display_name)}</b>\n\n{result}",
             reply_markup=account_actions(account.id, bool(account.topic_thread_id), account.scheduler_status),
@@ -434,8 +438,9 @@ def build_router(repo, manager, secret_box, client_factory, admin_ids=None, bot=
         page = int(call.data.rsplit(":", 1)[1]) if call.data.startswith("found:page:") else 0
         visible, page, pages = page_slice(found, page)
         lines = [f"✅ <b>Найденные IP · {len(found)}</b>", ""]
+        offset = (await repo.ui.preferences(call.from_user.id)).utc_offset_minutes if getattr(repo, "ui", None) else 300
         for item in visible:
-            lines += [f"🌐 <code>{safe(item.floating_ip_address)}</code>", f"Подсеть: <code>{safe(item.subnet_cidr)}</code> · {safe(item.region)}", f"Найден: {local_time(item.found_at)} · ЕКБ (UTC+5)", ""]
+            lines += [f"🌐 <code>{safe(item.floating_ip_address)}</code>", f"Подсеть: <code>{safe(item.subnet_cidr)}</code> · {safe(item.region)}", f"Найден: {local_time(item.found_at, offset)} · {timezone_name(offset)}", ""]
         if not found:
             lines.append("Адресов пока нет. Результаты поиска появятся здесь.")
         await edit_screen(call.message, "\n".join(lines), found_pages(page, pages))

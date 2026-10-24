@@ -12,3 +12,9 @@ TARGET_SUBNETS = [
 ]
 
 BY_ID = {item["subnet_id"]: item for item in TARGET_SUBNETS}
+TARGET_SUBNETS.extend([
+    {"region": "ru-2", "cidr": "5.178.85.0/24", "subnet_id": "30159164-be7b-4897-bfdf-4cc4f63c230f"},
+    {"region": "ru-2", "cidr": "81.163.23.0/24", "subnet_id": "733b1039-4e6a-42df-a443-a2360b8a1c55"},
+    {"region": "ru-2", "cidr": "81.163.22.0/24", "subnet_id": "5e1a54a4-7748-43ff-87f0-0dca50d75674"},
+])
+BY_ID.update({item["subnet_id"]: item for item in TARGET_SUBNETS})

@@ -122,6 +122,9 @@ class BurstSchedulerManager:
             account = await self.repo.get_account(account_id)
             if not account:
                 return None
+            if getattr(self.repo, "queue", None) is not None and not await self.repo.queue.list(account_id=account_id):
+                targets = await self.repo.enabled_targets(account_id)
+                await self.repo.queue.enqueue(account, [{"region": t.region, "subnet_id": t.subnet_id, "cidr": t.cidr} for t in targets if t.region == account.region])
             await self.repo.update_account(account_id, scheduler_status=self._activation_status(account))
             if reschedule:
                 await self.recalculate_schedule(reset=True)
@@ -177,6 +180,8 @@ class BurstSchedulerManager:
         account = await self.repo.get_account(account_id)
         if not account:
             return None
+        if getattr(self.repo, "queue", None) is not None and not await self.repo.queue.list(account_id=account_id):
+            return await self.start_account(account_id)
         await self.repo.update_account(account_id, scheduler_status=self._activation_status(account), next_cycle_at=_utcnow())
         await self.recalculate_schedule(reset=True)
         await self._ensure_scheduler()
@@ -200,6 +205,9 @@ class BurstSchedulerManager:
         failed = []
         for account in await self.repo.accounts(user_id):
             try:
+                if getattr(self.repo, "queue", None) is not None and not await self.repo.queue.list(account_id=account.id):
+                    targets = await self.repo.enabled_targets(account.id)
+                    await self.repo.queue.enqueue(account, [{"region": t.region, "subnet_id": t.subnet_id, "cidr": t.cidr} for t in targets if t.region == account.region])
                 await self.repo.update_account(account.id, scheduler_status=self._activation_status(account))
                 started += 1
             except Exception as exc:
@@ -360,6 +368,8 @@ class BurstSchedulerManager:
         return SimpleNamespace(id=account.id, account_id=account.id, telegram_user_id=account.telegram_user_id, subnet_cidr="account burst", status=account.scheduler_status, attempts=0, min_interval=30, max_interval=60, last_error=None)
 
     async def start_pair(self, user_id, account, subnet, network_id, min_interval=None, max_interval=None):
+        if getattr(self.repo, "queue", None) is not None:
+            await self.repo.queue.enqueue(account, [{"region": subnet.region, "subnet_id": subnet.subnet_id, "cidr": subnet.cidr}])
         await self.start_account(account.id)
         return account
 

@@ -15,7 +15,7 @@ def test_target_subnets_have_region_and_ru9_targets():
 
 
 def test_ru1_region_and_target_configuration():
-    assert REGION_ORDER == ["ru-1", "ru-3", "ru-9"]
+    assert REGION_ORDER == ["ru-1", "ru-3", "ru-9", "ru-2"]
     assert REGIONS["ru-1"] == {
         "network_api_url": "https://ru-1.cloud.api.selcloud.ru/network/v2.0",
         "floating_network_id": "ab2264dd-bde8-4a97-b0da-5fea63191019",
