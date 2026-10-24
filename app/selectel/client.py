@@ -1,4 +1,4 @@
-import asyncio, logging, random, os, time
+import asyncio, logging, os, time
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any
@@ -20,7 +20,7 @@ class SelectelClient:
     # still valid. Keep these retries local to the API call so the scheduler's
     # delay between subnets is not changed.
     NETWORK_RETRIES = 3
-    NETWORK_RETRY_DELAYS = (0.15, 0.35)
+    NETWORK_RETRY_DELAY = 0.15
 
     def __init__(self, account, password: str, default_network_id: str | None = None, proxy: str | None = None, region: str | None = None, network_api_url: str | None = None, floating_network_id: str | None = None, api_timeout: float | None = None):
         self.account, self.password, self.region = account, password, region or account.region
@@ -60,8 +60,7 @@ class SelectelClient:
             self.session = None
 
     async def _network_retry_delay(self, attempt: int):
-        delay = self.NETWORK_RETRY_DELAYS[min(attempt, len(self.NETWORK_RETRY_DELAYS) - 1)]
-        await asyncio.sleep(random.uniform(delay * 0.8, delay * 1.2))
+        await asyncio.sleep(self.NETWORK_RETRY_DELAY)
 
     async def close(self):
         async with self._request_lock:
@@ -154,7 +153,7 @@ class SelectelClient:
                         # Resource POSTs are reconciled by the durable queue, never retried blindly.
                         if method.upper() in {"GET", "HEAD", "DELETE"} and (response.status == 429 or response.status >= 500) and network_attempt + 1 < self.NETWORK_RETRIES:
                             network_attempt += 1
-                            await asyncio.sleep(max(retry_seconds or 0, random.uniform(0.5, 1.5) * 2 ** network_attempt))
+                            # The ordinary API_REQUEST_INTERVAL applies on every retry.
                             continue
                         raise SelectelError(ErrorClassifier.classify(response.status, payload), reason, retry_seconds, response.status)
                     return payload

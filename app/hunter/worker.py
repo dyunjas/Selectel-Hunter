@@ -31,19 +31,12 @@ class HunterWorker:
                         # Даже 401/403/unknown не переводим в ERROR: credentials или
                         # права могут быть исправлены без пересоздания задачи.
                         configured_delay = random.uniform(current.min_interval, current.max_interval)
-                        if exc.retry_after:
-                            delay = exc.retry_after
-                        elif exc.kind in (ErrorType.NETWORK_ERROR, ErrorType.SERVER_ERROR, ErrorType.RATE_LIMIT):
-                            delay = max(configured_delay, min(60, 2 ** min(current.attempts, 6)))
-                        else:
-                            # NO_FREE_IP, AUTH_ERROR и PERMISSION_ERROR не
-                            # увеличивают задержку: используем настройки аккаунта.
-                            delay = configured_delay
+                        delay = configured_delay
                         log.warning(
                             "retry scheduled task_id=%s attempt=%s error=%s detail=%s delay_seconds=%.1f",
                             current.id, current.attempts, exc.kind.value, str(exc)[:300], delay,
                         )
-                        await asyncio.sleep(max(3, min(delay, 300))); continue
+                        await asyncio.sleep(max(0, delay)); continue
                     ip = result.get("floating_ip_address"); fip_id = result.get("id")
                     elapsed = time.monotonic() - started
                     await self.repo.update_task(current.id, status=TaskStatus.FOUND.value, floating_ip_address=ip, floating_ip_id=fip_id, elapsed_seconds=elapsed, finished_at=datetime.now(timezone.utc).replace(tzinfo=None), last_error=None)

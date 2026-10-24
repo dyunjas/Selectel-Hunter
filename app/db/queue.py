@@ -126,7 +126,7 @@ class DurableQueue:
     async def begin_operation(self, job, network_id):
         await self.change(job, require_running=True, operation_id=uuid.uuid4().hex, network_id=network_id, attempts=job.attempts + 1)
 
-    async def release(self, job, delay=30, error=None, clear_operation=False, failed=False):
+    async def release(self, job, delay=30, error=None, clear_operation=False, failed=False, next_attempt_at=None):
         async with self.sessions() as s:
             await s.execute(text("BEGIN IMMEDIATE"))
             current = await s.get(QueueJob, job.id)
@@ -140,7 +140,7 @@ class DurableQueue:
                 stop_clock(state, now())
                 state.paused_at, state.pause_reason = now(), "error"
             current.lease_token = current.lease_until = None
-            current.due_at, current.updated_at = now() + timedelta(seconds=delay), now()
+            current.due_at, current.updated_at = next_attempt_at or now() + timedelta(seconds=delay), now()
             if error:
                 current.errors += 1
                 current.last_error = error[:1000]

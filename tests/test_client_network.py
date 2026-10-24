@@ -204,14 +204,16 @@ async def test_expiring_token_refreshed_before_request(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_get_429_respects_retry_after(monkeypatch):
+@pytest.mark.parametrize("status", [429, 500, 503])
+async def test_http_retries_do_not_extend_configured_interval(monkeypatch, status):
     client, sessions = client_with_sessions(monkeypatch, [Response()])
-    replies = iter([Response(status=429, headers={"Retry-After": "120"}), Response(payload={"floatingips": []})])
+    replies = iter([Response(status=status, headers={"Retry-After": "120"}), Response(status=status, headers={"Retry-After": "7200"}), Response(payload={"floatingips": []})])
     sessions[0].request = lambda *args, **kwargs: next(replies)
     sleep = AsyncMock()
     monkeypatch.setattr("app.selectel.client.asyncio.sleep", sleep)
     assert await client.get_floating_ips("ru-2") == {"floatingips": []}
-    assert any(call.args[0] >= 120 for call in sleep.call_args_list)
+    assert sleep.await_count == 3
+    assert all(0 <= call.args[0] <= 0.3 for call in sleep.call_args_list)
 
 
 @pytest.mark.asyncio
@@ -220,3 +222,13 @@ async def test_unknown_region_fails_before_any_request(monkeypatch):
     with pytest.raises(ValueError):
         await client.get_floating_ips("ru-unknown")
     assert sessions[0].calls == []
+
+
+@pytest.mark.asyncio
+async def test_network_retry_delay_never_grows(monkeypatch):
+    client = SelectelClient(SimpleNamespace(region="ru-2", network_api_url="unused"), "secret")
+    sleep = AsyncMock()
+    monkeypatch.setattr("app.selectel.client.asyncio.sleep", sleep)
+    for attempt in (0, 1, 2, 10000):
+        await client._network_retry_delay(attempt)
+    assert [call.args[0] for call in sleep.call_args_list] == [0.15] * 4

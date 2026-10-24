@@ -36,12 +36,12 @@ async def test_cycle_uses_one_client_and_closes_it_on_every_exit(outcome):
         with pytest.raises(asyncio.CancelledError):
             await worker._run_burst(account)
     else:
-        expected = {"finished": "finished", "blocked": "stop", "cooldown": "cooldown"}
+        expected = {"finished": "finished", "blocked": "stop", "cooldown": "finished"}
         assert await worker._run_burst(account) == expected[outcome]
     factory.assert_awaited_once_with(1)
     # Discard any idle UI session before the cycle and close after it.
     assert client.close.await_count == 2
-    assert client.create_floating_ip.await_count == (3 if outcome == "finished" else 1)
+    assert client.create_floating_ip.await_count == (3 if outcome in {"finished", "cooldown"} else 1)
 
 
 @pytest.mark.asyncio

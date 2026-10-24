@@ -98,7 +98,6 @@ class AccountBurstWorker:
     async def _error(self, account, subnet, started, exc):
         kind = exc.kind.value
         await self._record(account, subnet, kind, started, exc)
-        now = utcnow()
         if kind == ErrorType.NO_FREE_IP.value:
             await self._state(consecutive_network_errors=0)
             await self._notify(account, subnet, f"NO_FREE_IP: {exc}")
@@ -109,12 +108,8 @@ class AccountBurstWorker:
             await self._notify(account, subnet, f"{kind}: HTTP {exc.status or '—'}: {exc}")
             return "stop"
         if kind == ErrorType.RATE_LIMIT.value:
-            delay = exc.retry_after or 300
-            until = now + timedelta(seconds=float(delay))
-            await self._state(scheduler_status="RATE_LIMIT_COOLDOWN", cooldown_until=until, next_cycle_at=until)
-            await self._recalculate(reset=False)
-            await self._notify(account, subnet, f"RATE_LIMIT: HTTP 429: cooldown {int(delay)} сек. — {exc}")
-            return "cooldown"
+            await self._notify(account, subnet, f"RATE_LIMIT: HTTP 429: {exc}")
+            return "continue"
         if kind == ErrorType.NETWORK_ERROR.value:
             errors = int(account.consecutive_network_errors or 0) + 1
             await self._state(consecutive_network_errors=errors)

@@ -2,7 +2,6 @@
 import asyncio
 import json
 import logging
-import random
 import time
 from ipaddress import ip_address, ip_network
 from app.db.queue import LeaseLost
@@ -55,8 +54,9 @@ class DurableBurst:
                                     outcome = "CLEANUP_CONFIRMED"
                                     return
                                 raise
-                    await self.queue.release(job, delay=300, error="Outcome of allocation is unresolved; reconciliation only")
-                    outcome, retry_delay = "UNRESOLVED", 300
+                    retry_delay, next_attempt_at = await self._retry_schedule(account)
+                    await self.queue.release(job, next_attempt_at=next_attempt_at, error="Outcome of allocation is unresolved; reconciliation only")
+                    outcome = "UNRESOLVED"
                     return
                 resource = matches[0]
             else:
@@ -71,8 +71,9 @@ class DurableBurst:
                 self._log_request(job, action, "START", started)
                 resource = await client.create_floating_ip(job.region, job.subnet_id, description=self.marker(job), network_id=network)
             if not self.owns(job, account, resource) or not resource.get("floating_ip_address"):
-                await self.queue.release(job, delay=300, error="Allocation ownership could not be verified; resource preserved")
-                outcome, retry_delay = "RESOURCE_PRESERVED", 300
+                retry_delay, next_attempt_at = await self._retry_schedule(account)
+                await self.queue.release(job, next_attempt_at=next_attempt_at, error="Allocation ownership could not be verified; resource preserved")
+                outcome = "RESOURCE_PRESERVED"
                 return
             await self.queue.change(job, resource_json=json.dumps(resource))
             if ip_address(resource["floating_ip_address"]) in ip_network(job.cidr):
@@ -84,8 +85,9 @@ class DurableBurst:
             else:
                 fresh = await client.get_floating_ip(resource["id"], job.region)
                 if not self.owns(job, account, fresh) or fresh.get("id") != resource["id"] or fresh.get("port_id"):
-                    await self.queue.release(job, delay=300, error="Deletion ownership check failed; resource preserved", failed=True)
-                    outcome, retry_delay = "DELETE_OWNERSHIP_FAILED", 300
+                    retry_delay, next_attempt_at = await self._retry_schedule(account)
+                    await self.queue.release(job, next_attempt_at=next_attempt_at, error="Deletion ownership check failed; resource preserved", failed=True)
+                    outcome = "DELETE_OWNERSHIP_FAILED"
                     return
                 await self.queue.heartbeat(job)
                 await client.delete_floating_ip(resource["id"], job.region)
@@ -100,16 +102,13 @@ class DurableBurst:
             # errors and 5xx remain ambiguous and retain the durable intent.
             definite = exc.status is not None and 400 <= exc.status < 500
             clear = definite and posting and not job.resource_json
-            delay = max(exc.retry_after or 0, min(3600, 30 * 2 ** min(job.errors, 7)) * random.uniform(0.8, 1.2))
+            delay, next_attempt_at = await self._retry_schedule(account)
             retry_delay = delay
             failed = exc.kind in {ErrorType.AUTH_ERROR, ErrorType.PERMISSION_ERROR, ErrorType.QUOTA_EXCEEDED} or (exc.status in {400, 404})
-            await self.queue.release(job, delay=delay, error=f"{exc.kind.value}: HTTP {exc.status or '—'}", clear_operation=clear, failed=failed)
+            await self.queue.release(job, delay=delay, next_attempt_at=next_attempt_at,
+                error=f"{exc.kind.value}: HTTP {exc.status or '—'}", clear_operation=clear, failed=failed)
             await self.repo.record_attempt(account_id=account.id, subnet_id=job.subnet_id, cidr=job.cidr,
                 result=exc.kind.value, http_status=exc.status, error_type=exc.kind.value)
-            if exc.kind == ErrorType.RATE_LIMIT:
-                from datetime import datetime, timedelta
-                until = datetime.utcnow() + timedelta(seconds=delay)
-                await self.repo.update_account(account.id, scheduler_status="RATE_LIMIT_COOLDOWN", cooldown_until=until, next_cycle_at=until)
         except LeaseLost:
             outcome = "LEASE_LOST"
             raise
@@ -117,9 +116,10 @@ class DurableBurst:
             outcome = "CANCELLED"
             raise
         except Exception as exc:
-            outcome, retry_delay = "WORKER_ERROR", 300
+            outcome = "WORKER_ERROR"
+            retry_delay, next_attempt_at = await self._retry_schedule(account)
             log.warning("selectel_worker_error job=%s region=%s error_type=%s", job.id, job.region, type(exc).__name__)
-            await self.queue.release(job, delay=300, error=f"Worker error: {type(exc).__name__}")
+            await self.queue.release(job, next_attempt_at=next_attempt_at, error=f"Worker error: {type(exc).__name__}")
         finally:
             self._log_request(job, action, outcome, started, http_status, retry_delay)
 
@@ -133,6 +133,17 @@ class DurableBurst:
             int((time.monotonic() - started) * 1000),
             round(retry_delay, 2) if retry_delay is not None else "—",
         )
+
+    async def _retry_schedule(self, account):
+        from app.db.queue import now
+        from .account_worker import next_scheduled_cycle
+        at = now()
+        settings = await self.repo.scheduler_settings()
+        period = max(1, int(settings.burst_cooldown or 360))
+        planned = account.next_cycle_at or account.last_cycle_started_at or at
+        next_attempt = next_scheduled_cycle(planned, at, period)
+        # Errors, their history and Retry-After never extend the BURST cadence.
+        return max(0, (next_attempt - at).total_seconds()), next_attempt
 
     async def run(self, account):
         client = await self.client_factory(account.id)
