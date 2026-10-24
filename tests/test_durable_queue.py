@@ -332,3 +332,34 @@ async def test_durable_burst_integrates_with_existing_account_scheduler(context)
     assert {call.args[0] for call in client.create_floating_ip.call_args_list} == {"ru-2", "ru-3"}
     assert all(j.attempts == 1 and j.status == "pending" for j in await repo.queue.list())
     client.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind,status", [(ErrorType.NO_FREE_IP, 409), (ErrorType.RATE_LIMIT, 429), (ErrorType.SERVER_ERROR, 503)])
+async def test_durable_request_logs_context_and_result_without_secrets(context, caplog, kind, status):
+    import logging
+    _, repo, account, _ = context
+    job = await claim(repo, account)
+    client = fake_client()
+    client.create_floating_ip.side_effect = SelectelError(kind, "password=must-not-be-logged token=private", retry_after=120, status=status)
+    with caplog.at_level(logging.INFO, logger="app.hunter.durable"):
+        await DurableBurst(repo, AsyncMock()).attempt(job, account, client)
+    assert f"job={job.id}" in caplog.text and "region=ru-2" in caplog.text
+    assert f"subnet={job.cidr}" in caplog.text and "attempt=1" in caplog.text
+    assert "result=START" in caplog.text and f"result={kind.value}" in caplog.text
+    assert f"http={status}" in caplog.text and "retry_seconds=" in caplog.text
+    assert "must-not-be-logged" not in caplog.text and "token=private" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_logging_does_not_allocate_again(context, caplog):
+    import logging
+    _, repo, account, _ = context
+    job = await claim(repo, account)
+    await repo.queue.begin_operation(job, "network")
+    client = fake_client()
+    with caplog.at_level(logging.INFO, logger="app.hunter.durable"):
+        await DurableBurst(repo, AsyncMock()).attempt(job, account, client)
+    assert "action=reconcile" in caplog.text and "result=UNRESOLVED" in caplog.text
+    assert "retry_seconds=300" in caplog.text
+    client.create_floating_ip.assert_not_awaited()
