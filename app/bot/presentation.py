@@ -32,7 +32,7 @@ def regions_for(selection):
 
 def region_name(region):
     if region == "all":
-        return "Все регионы"
+        return "Москва + Санкт-Петербург"
     if region == "spb":
         return "Санкт-Петербург (" + ", ".join(regions_for("spb")) + ")"
     return f"Москва ({region})" if region == "ru-2" else f"Санкт-Петербург ({region})"
@@ -89,6 +89,7 @@ def keyboard(*rows):
 def region_keyboard(current, prefix="city", back="home"):
     return keyboard([(("✅ " if current == "ru-2" else "") + "🏙 Москва", f"{prefix}:ru-2")],
                     [(("✅ " if current == "spb" else "") + "🌉 Санкт-Петербург", f"{prefix}:spb")],
+                    [(("✅ " if current == "all" else "") + "🏙 + 🌉 Оба города", f"{prefix}:all")],
                     [("◀️ Назад", back)])
 
 

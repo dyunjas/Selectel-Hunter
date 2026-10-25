@@ -43,16 +43,16 @@ def build_experience_router(repo, manager, admin_ids, client_factory, screens=No
     @router.callback_query(F.data == "ui:regions")
     async def regions(call):
         pref = await repo.ui.preferences(call.from_user.id)
-        await edit_screen(call.message, f"🌍 <b>ВЫБОР РЕГИОНА</b>\n{RULE}\n\nВыберите, где искать IP-адреса.\nСанкт-Петербург включает все регионы, кроме ru-2.\n\n✅ Текущий регион: <b>{safe(region_name(pref.selected_region))}</b>\n\nВыбор действует для нового поиска. Существующие задания сохраняют свой регион.", region_keyboard(pref.selected_region))
+        await edit_screen(call.message, f"🌍 <b>ВЫБОР РЕГИОНОВ</b>\n{RULE}\n\nВыберите один город или «Оба города» для одновременного поиска в Москве и Петербурге.\nСанкт-Петербург включает все регионы, кроме ru-2.\n\n✅ Текущий выбор: <b>{safe(region_name(pref.selected_region))}</b>\n\nВыбор действует для нового поиска. Существующие задания сохраняют свой регион.", region_keyboard(pref.selected_region))
         await call.answer()
 
-    @router.callback_query(F.data.regexp(r"^city:(ru-2|spb)$"))
+    @router.callback_query(F.data.regexp(r"^city:(ru-2|spb|all)$"))
     async def city(call):
         selected = call.data.split(":")[1]
         await repo.ui.preferences(call.from_user.id, selected_region=selected)
         cities = await repo.ui.active_by_city(call.from_user.id)
-        await edit_screen(call.message, f"✅ <b>ГОРОД ВЫБРАН ДЛЯ ЗАПУСКА</b>\n{RULE}\n\n{safe(region_name(selected))}\n\nСейчас ищут: Москва — {cities['ru-2']}, Петербург — {cities['spb']}.\nНажмите «Запустить выбранный город», чтобы переключить все аккаунты. Задания другого города будут на паузе; история и IP сохранятся.",
-            keyboard([("🚀 Запустить выбранный город", "hunt:all")], [("➕ Добавить параллельно", f"hunt:add:{selected}")], [("🎯 Выбрать аккаунт и подсети", "hunt:start")], [("🌍 Выбрать регион", "ui:regions")], [("◀️ Главное меню", "home")]))
+        await edit_screen(call.message, f"✅ <b>РЕГИОНЫ ВЫБРАНЫ ДЛЯ ЗАПУСКА</b>\n{RULE}\n\n{safe(region_name(selected))}\n\nСейчас ищут: Москва — {cities['ru-2']}, Петербург — {cities['spb']}.\nНажмите «Запустить выбранные регионы», чтобы применить выбор ко всем аккаунтам. Задания вне выбранных регионов будут на паузе; история и IP сохранятся.",
+            keyboard([("🚀 Запустить выбранные регионы", "hunt:all")], [("➕ Добавить параллельно", f"hunt:add:{selected}")], [("🎯 Выбрать аккаунт и подсети", "hunt:start")], [("🌍 Выбрать регионы", "ui:regions")], [("◀️ Главное меню", "home")]))
         await call.answer("Регион сохранён")
 
     @router.callback_query(F.data == "stats:view")

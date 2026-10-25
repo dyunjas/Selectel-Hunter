@@ -49,7 +49,7 @@ def build_multisubnet_router(repo, manager, admin_ids=None, client_factory=None)
         for row in markup.inline_keyboard[:-1]:
             for button in row:
                 button.callback_data += f":{account.id}"
-        await edit_screen(call.message, f"🌍 <b>ВЫБОР РЕГИОНА</b>\n{RULE}\n\nАккаунт: <b>{safe(account.display_name)}</b>\nТекущий выбор: {safe(region_name(current))}\n\nСанкт-Петербург включает все регионы, кроме ru-2.\nВыберите город для нового поиска:", markup)
+        await edit_screen(call.message, f"🌍 <b>ВЫБОР РЕГИОНОВ</b>\n{RULE}\n\nАккаунт: <b>{safe(account.display_name)}</b>\nТекущий выбор: {safe(region_name(current))}\n\nСанкт-Петербург включает все регионы, кроме ru-2.\nВыберите один город или «Оба города» для поиска сразу в Москве и Петербурге:", markup)
 
     async def draft_screen(call, draft, account, page=0):
         from .views import page_slice

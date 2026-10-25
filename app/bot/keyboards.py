@@ -8,7 +8,7 @@ def main_menu():
         [InlineKeyboardButton(text="📋 Мои задания", callback_data="task:list"), InlineKeyboardButton(text="✅ История IP", callback_data="found:list")],
         [InlineKeyboardButton(text="📊 Статистика", callback_data="stats:view"), InlineKeyboardButton(text="⚙️ Настройки", callback_data="ui:settings")],
         [InlineKeyboardButton(text="👤 Аккаунты", callback_data="account:list"), InlineKeyboardButton(text="🗓 Расписание", callback_data="scheduler:view")],
-        [InlineKeyboardButton(text="🚀 Запустить выбранный город", callback_data="hunt:all")],
+        [InlineKeyboardButton(text="🚀 Запустить выбранные регионы", callback_data="hunt:all")],
         [InlineKeyboardButton(text="ℹ️ Помощь", callback_data="help")],
     ])
 

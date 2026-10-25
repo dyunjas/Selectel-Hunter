@@ -362,6 +362,42 @@ async def test_durable_burst_integrates_with_existing_account_scheduler(context)
 
 
 @pytest.mark.asyncio
+async def test_multi_region_cycle_loads_settings_and_targets_only_once(context, monkeypatch):
+    _, repo, account, _ = context
+    await repo.queue.enqueue(account, TARGET_SUBNETS)
+    client = fake_client()
+    client.resolve_network.side_effect = lambda region, subnet: REGIONS[region]['floating_network_id']
+    client.create_floating_ip.side_effect = SelectelError(ErrorType.NO_FREE_IP, 'empty', status=409)
+    settings = AsyncMock(wraps=repo.scheduler_settings)
+    targets = AsyncMock(wraps=repo.enabled_targets)
+    monkeypatch.setattr(repo, 'scheduler_settings', settings)
+    monkeypatch.setattr(repo, 'enabled_targets', targets)
+    real_sleep = asyncio.sleep
+    async def sleep(seconds):
+        await real_sleep(0 if seconds == 0.3 else seconds)
+    monkeypatch.setattr('app.hunter.durable.asyncio.sleep', sleep)
+    assert await DurableBurst(repo, AsyncMock(return_value=client)).run(account) == 'finished'
+    assert client.create_floating_ip.await_count == len(TARGET_SUBNETS)
+    for request in client.create_floating_ip.call_args_list:
+        assert request.kwargs['network_id'] == REGIONS[request.args[0]]['floating_network_id']
+    settings.assert_awaited_once()
+    targets.assert_awaited_once_with(account.id)
+
+
+@pytest.mark.asyncio
+async def test_live_account_pause_still_stops_next_request_with_cycle_snapshot(context):
+    _, repo, account, _ = context
+    await repo.queue.enqueue(account, [target('ru-2'), target('ru-3')])
+    client = fake_client()
+    async def create(*args, **kwargs):
+        await repo.update_account(account.id, scheduler_status='PAUSED')
+        raise SelectelError(ErrorType.NO_FREE_IP, 'empty', status=409)
+    client.create_floating_ip.side_effect = create
+    assert await DurableBurst(repo, AsyncMock(return_value=client)).run(account) == 'stop'
+    client.create_floating_ip.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("kind,status", [(ErrorType.NO_FREE_IP, 409), (ErrorType.RATE_LIMIT, 429), (ErrorType.SERVER_ERROR, 503)])
 async def test_durable_request_logs_context_and_result_without_secrets(context, caplog, kind, status):
     import logging

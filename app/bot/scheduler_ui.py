@@ -15,7 +15,7 @@ def build_scheduler_ui(repo, manager, admin_ids=None):
         router.callback_query.outer_middleware(AdminOnlyMiddleware(admin_ids))
 
     @router.callback_query(F.data == "hunt:all")
-    @router.callback_query(F.data.regexp(r"^hunt:add:(ru-2|spb)$"))
+    @router.callback_query(F.data.regexp(r"^hunt:add:(ru-2|spb|all)$"))
     async def start_all(call):
         accounts = await repo.accounts(call.from_user.id)
         if not accounts:

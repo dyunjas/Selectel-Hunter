@@ -629,6 +629,47 @@ async def test_start_all_defaults_to_saved_moscow_not_account_region(ctx):
 
 
 @pytest.mark.asyncio
+async def test_both_cities_can_be_selected_and_started_for_each_owned_account(ctx):
+    _, repo, account, _ = ctx
+    second = await repo.add_account(telegram_user_id=42, display_name="second", domain="d", username="u",
+        encrypted_password="encrypted", project_id="p", region="ru-2")
+    other = await repo.add_account(telegram_user_id=99, display_name="other", domain="d", username="u",
+        encrypted_password="encrypted", project_id="p", region="ru-2")
+    manager = scoped_manager(repo)
+    router = build_experience_router(repo, manager, {42}, AsyncMock())
+    chooser = call('ui:regions')
+    await handler(router, 'regions')(chooser)
+    assert 'city:all' in callbacks(chooser.message.edit_text.call_args.kwargs['reply_markup'])
+    await handler(router, 'city')(call('city:all'))
+    assert (await Repository(repo.sessions).ui.preferences(42)).selected_region == 'all'
+    assert await manager.start_all_accounts(42) == (2, [])
+    for owned in (account, second):
+        jobs = await repo.queue.list(account_id=owned.id)
+        assert {j.subnet_id for j in jobs} == {t['subnet_id'] for t in TARGET_SUBNETS}
+        assert all(j.status == 'pending' for j in jobs)
+        assert {j.region for j in jobs} == set(REGIONS)
+    assert not await repo.queue.list(account_id=other.id)
+
+
+@pytest.mark.asyncio
+async def test_single_account_draft_accepts_both_cities_and_keeps_subset(ctx):
+    _, repo, account, manager = ctx
+    router = build_multisubnet_router(repo, manager, {42})
+    state = FSMContext(storage=MemoryStorage(), key=StorageKey(bot_id=1, chat_id=42, user_id=42))
+    chooser = call(f'huntregion:all:{account.id}')
+    await handler(router, 'select_region')(chooser, state)
+    markup = chooser.message.edit_text.call_args.kwargs['reply_markup']
+    draft_id = next(c.split(':')[1] for c in callbacks(markup) if c.startswith('s:'))
+    action = handler(router, 'draft_action')
+    for region in ('ru-2', 'ru-3'):
+        await action(call(f's:{draft_id}:toggle:{subnet(region)["subnet_id"]}'))
+    await action(call(f's:{draft_id}:save'))
+    jobs = await repo.queue.list(account_id=account.id)
+    assert len(jobs) == 2 and {j.region for j in jobs} == {'ru-2', 'ru-3'}
+    manager.start_account.assert_awaited_once_with(account.id)
+
+
+@pytest.mark.asyncio
 async def test_first_single_account_start_uses_saved_city(ctx):
     _, repo, account, _ = ctx
     await repo.ui.preferences(42, selected_region='ru-2')

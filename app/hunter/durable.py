@@ -28,7 +28,7 @@ class DurableBurst:
                 and (resource.get("project_id") or resource.get("tenant_id")) == account.project_id
                 and resource.get("floating_network_id") == job.network_id)
 
-    async def attempt(self, job, account, client):
+    async def attempt(self, job, account, client, settings=None):
         started = time.monotonic()
         outcome, http_status, retry_delay = "INTERRUPTED", None, None
         action = "reconcile" if job.operation_id else "allocate"
@@ -55,7 +55,7 @@ class DurableBurst:
                 self._log_request(job, action, "START", started)
                 resource = await client.create_floating_ip(job.region, job.subnet_id, description=self.marker(job), network_id=network)
             if not self.owns(job, account, resource) or not resource.get("floating_ip_address"):
-                retry_delay, next_attempt_at = await self._retry_schedule(account)
+                retry_delay, next_attempt_at = await self._retry_schedule(account, settings)
                 await self.queue.release(job, next_attempt_at=next_attempt_at, error="Allocation ownership could not be verified; resource preserved")
                 outcome = "RESOURCE_PRESERVED"
                 return
@@ -72,12 +72,12 @@ class DurableBurst:
                 except SelectelError as exc:
                     if exc.status != 404:
                         raise
-                    retry_delay, next_attempt_at = await self._retry_schedule(account)
+                    retry_delay, next_attempt_at = await self._retry_schedule(account, settings)
                     await self.queue.release(job, next_attempt_at=next_attempt_at, clear_operation=True)
                     outcome = "CLEANUP_CONFIRMED"
                     return
                 if not self.owns(job, account, fresh) or fresh.get("id") != resource["id"] or fresh.get("port_id"):
-                    retry_delay, next_attempt_at = await self._retry_schedule(account)
+                    retry_delay, next_attempt_at = await self._retry_schedule(account, settings)
                     await self.queue.release(job, next_attempt_at=next_attempt_at, error="Deletion ownership check failed; resource preserved", failed=True)
                     outcome = "DELETE_OWNERSHIP_FAILED"
                     return
@@ -93,7 +93,7 @@ class DurableBurst:
             # Without a received resource, the next normal slot creates a new IP.
             # Known resources retain their response for safe completion/cleanup.
             clear = not job.resource_json
-            delay, next_attempt_at = await self._retry_schedule(account)
+            delay, next_attempt_at = await self._retry_schedule(account, settings)
             retry_delay = delay
             await self.queue.release(job, delay=delay, next_attempt_at=next_attempt_at,
                 error=f"{exc.kind.value}: HTTP {exc.status or '—'}", clear_operation=clear)
@@ -107,7 +107,7 @@ class DurableBurst:
             raise
         except Exception as exc:
             outcome = "WORKER_ERROR"
-            retry_delay, next_attempt_at = await self._retry_schedule(account)
+            retry_delay, next_attempt_at = await self._retry_schedule(account, settings)
             log.warning("selectel_worker_error job=%s region=%s error_type=%s", job.id, job.region, type(exc).__name__)
             await self.queue.release(job, next_attempt_at=next_attempt_at, error=f"Worker error: {type(exc).__name__}", clear_operation=not job.resource_json)
         finally:
@@ -124,11 +124,11 @@ class DurableBurst:
             round(retry_delay, 2) if retry_delay is not None else "—",
         )
 
-    async def _retry_schedule(self, account):
+    async def _retry_schedule(self, account, settings=None):
         from app.db.queue import now
         from .account_worker import next_scheduled_cycle
         at = now()
-        settings = await self.repo.scheduler_settings()
+        settings = settings if settings is not None else await self.repo.scheduler_settings()
         period = max(1, int(settings.burst_cooldown or 360))
         planned = account.next_cycle_at or account.last_cycle_started_at or at
         next_attempt = next_scheduled_cycle(planned, at, period)
@@ -141,6 +141,9 @@ class DurableBurst:
         allocated, reconciled = 0, 0
         started = time.monotonic()
         try:
+            # Snapshot configuration once per cycle; user job/account controls remain live.
+            settings = await self.repo.scheduler_settings()
+            enabled = {t.subnet_id for t in await self.repo.enabled_targets(account.id)}
             while True:
                 current = await self.repo.get_account(account.id)
                 if not current or current.scheduler_status != "RUNNING":
@@ -149,14 +152,13 @@ class DurableBurst:
                 if job is None:
                     return "finished"
                 seen.append(job.id)
-                enabled = {t.subnet_id for t in await self.repo.enabled_targets(account.id)}
                 if job.subnet_id not in enabled:
                     await self.queue.release(job, delay=60)
                     continue
                 heartbeat = asyncio.create_task(self._heartbeat(job))
                 previous_attempts = job.attempts
                 reconciled += int(bool(job.operation_id))
-                attempt = asyncio.create_task(self.attempt(job, current, client))
+                attempt = asyncio.create_task(self.attempt(job, current, client, settings=settings))
                 try:
                     done, _ = await asyncio.wait({heartbeat, attempt}, timeout=180, return_when=asyncio.FIRST_COMPLETED)
                     if not done:
@@ -168,11 +170,11 @@ class DurableBurst:
                     attempt.cancel()
                     await asyncio.gather(heartbeat, attempt, return_exceptions=True)
                     allocated += job.attempts - previous_attempts
-                saved = await self.queue.get(job.id)
-                if saved.status == "completed" and current.stop_account_after_found:
-                    await self.repo.update_account(account.id, scheduler_status="PAUSED", next_cycle_at=None)
-                    return "stop"
-                settings = await self.repo.scheduler_settings()
+                if current.stop_account_after_found:
+                    saved = await self.queue.get(job.id)
+                    if saved.status == "completed":
+                        await self.repo.update_account(account.id, scheduler_status="PAUSED", next_cycle_at=None)
+                        return "stop"
                 await asyncio.sleep(max(0.3, settings.burst_request_delay))
         finally:
             await client.close()

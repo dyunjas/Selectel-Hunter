@@ -19,7 +19,7 @@ class UiScreens:
                 f"Система: {status}\n📋 Активных заданий: <b>{number(stats['active'])}</b>\n"
                 f"Сейчас ищут: Москва — <b>{number(cities['ru-2'])}</b>, Петербург — <b>{number(cities['spb'])}</b>\n"
                 f"✅ Найдено IP: <b>{number(stats['found'])}</b>\n\n"
-                f"{RULE}\n«Запустить выбранный город» переключит все аккаунты на этот город, остальные задания поставит на паузу.")
+                f"{RULE}\n«Запустить выбранные регионы» запустит аккаунты в выбранном городе или сразу в обоих. Задания вне выбранных регионов будут на паузе.")
         return text, main_menu()
 
     async def listing(self, user_id, page=0, active_only=False, city=None):
