@@ -144,13 +144,9 @@ async def test_success_is_atomic_and_telegram_failure_retries(context):
     service = NotificationService(bot, repo)
     payload = json.loads(outbox[0].payload)
     task = await repo.get_task(payload["task_id"])
-    with pytest.raises(ConnectionError):
-        await service.send(task, payload["ip"], payload["fip_id"], 0, "FOUND", durable=True)
-    await repo.queue.notification_result(outbox[0], False, delay=0)
-    assert len([item for item in await repo.queue.pending_notifications() if item.event_type == "FOUND"]) == 1
-    assert len(await repo.found(42)) == 1
-    bot.send_message.side_effect = None
     assert await service.send(task, payload["ip"], payload["fip_id"], 0, "FOUND", durable=True)
+    bot.send_message.assert_not_awaited()
+    assert len(await repo.found(42)) == 1
     await repo.queue.notification_result(outbox[0], True)
     assert not [item for item in await repo.queue.pending_notifications() if item.event_type == "FOUND"]
     with pytest.raises(LeaseLost):

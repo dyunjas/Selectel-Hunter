@@ -218,7 +218,7 @@ async def test_outage_episode_is_deduplicated_persistently_and_recovers(ctx):
 
 
 @pytest.mark.asyncio
-async def test_found_notification_has_correct_links_and_retries_without_loss(ctx):
+async def test_found_is_saved_but_notification_is_consumed_without_sending(ctx):
     db, repo, account, _ = ctx
     await enqueue(repo, account)
     job = await complete(repo, account)
@@ -226,15 +226,9 @@ async def test_found_notification_has_correct_links_and_retries_without_loss(ctx
     task = await repo.get_task(item.hunter_task_id)
     bot = SimpleNamespace(send_message=AsyncMock(side_effect=ConnectionError('offline')))
     service = NotificationService(bot, repo)
-    with pytest.raises(ConnectionError):
-        await service.send(task, item.floating_ip_address, item.floating_ip_id, 0, 'FOUND', durable=True)
-    bot.send_message.side_effect = None
     assert await service.send(task, item.floating_ip_address, item.floating_ip_id, 0, 'FOUND', durable=True)
-    args, kwargs = bot.send_message.call_args
-    assert 'Москва (ru-2)' in args[1] and item.floating_ip_address in args[1]
-    assert 'Selectel. Результат сохранён в БД' in args[1]
-    assert f'job:view:{job.id}' in callbacks(kwargs['reply_markup'])
-    assert f'ip:view:{item.id}' in callbacks(kwargs['reply_markup'])
+    bot.send_message.assert_not_awaited()
+    assert (await repo.ui.history(42))[0][0].floating_ip_address == item.floating_ip_address
     event = next(i for i in await repo.queue.pending_notifications() if i.event_type == 'FOUND')
     await repo.queue.notification_result(event, True)
     restarted = Repository(db.sessions)
@@ -354,7 +348,7 @@ async def test_no_found_claim_before_committed_result(ctx):
     bot = SimpleNamespace(send_message=AsyncMock())
     task = SimpleNamespace(id=1234, account_id=account.id, telegram_user_id=42,
         subnet_id=job.subnet_id, subnet_cidr=job.cidr, region=job.region, attempts=0)
-    assert not await NotificationService(bot, repo).send(task, '5.178.85.1', 'unconfirmed', 0, 'FOUND', durable=True)
+    assert await NotificationService(bot, repo).send(task, '5.178.85.1', 'unconfirmed', 0, 'FOUND', durable=True)
     bot.send_message.assert_not_awaited()
 
 
@@ -364,12 +358,12 @@ async def test_error_cooldown_groups_subnets_and_survives_service_restart(ctx):
     job = (await enqueue(repo, account))[0]
     bot = SimpleNamespace(send_message=AsyncMock())
     subject = SimpleNamespace(account_id=account.id, telegram_user_id=42, region='ru-2', subnet_id=job.subnet_id, subnet_cidr=job.cidr, attempts=1)
-    assert await NotificationService(bot, repo).send(subject, None, None, 0, 'SERVER_ERROR: 503', durable=True)
+    assert await NotificationService(bot, repo).send(subject, None, None, 0, 'QUOTA_EXCEEDED: HTTP 409', durable=True)
     subject.subnet_id = 'another-subnet'
-    assert await NotificationService(bot, repo).send(subject, None, None, 0, 'SERVER_ERROR: 503', durable=True)
+    assert await NotificationService(bot, repo).send(subject, None, None, 0, 'QUOTA_EXCEEDED: HTTP 409', durable=True)
     bot.send_message.assert_awaited_once()
     subject.region = 'ru-9'
-    assert await NotificationService(bot, repo).send(subject, None, None, 0, 'SERVER_ERROR: 503', durable=True)
+    assert await NotificationService(bot, repo).send(subject, None, None, 0, 'QUOTA_EXCEEDED: HTTP 409', durable=True)
     assert bot.send_message.await_count == 2
 
 
@@ -381,10 +375,43 @@ async def test_failed_error_delivery_is_not_consumed_by_cooldown(ctx):
     subject = SimpleNamespace(account_id=account.id, telegram_user_id=42, region='ru-2', subnet_id=job.subnet_id, subnet_cidr=job.cidr, attempts=1)
     service = NotificationService(bot, repo)
     with pytest.raises(ConnectionError):
-        await service.send(subject, None, None, 0, 'NETWORK_ERROR', durable=True)
+        await service.send(subject, None, None, 0, 'PERMISSION_ERROR: HTTP 403', durable=True)
     bot.send_message.side_effect = None
-    assert await service.send(subject, None, None, 0, 'NETWORK_ERROR', durable=True)
+    assert await service.send(subject, None, None, 0, 'PERMISSION_ERROR: HTTP 403', durable=True)
     assert bot.send_message.await_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["RECOVERED", "NETWORK_ERROR", "SERVER_ERROR", "RATE_LIMIT", "NO_FREE_IP",
+                                  "AUTH_ERROR", "STARTED", "RESUMED", "PAUSED", "STOPPED", "RESTORED",
+                                  "SCHEDULER", "UNKNOWN", "FOUND"])
+@pytest.mark.parametrize("durable", [False, True])
+async def test_only_permission_and_quota_notifications_are_enabled(kind, durable):
+    bot = SimpleNamespace(send_message=AsyncMock())
+    repo = SimpleNamespace(get_account=AsyncMock(side_effect=AssertionError("Suppressed event must not query the account")))
+    service = NotificationService(bot, repo)
+    assert await service.send(None, None, None, 0, kind, durable=durable) is durable
+    bot.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["PERMISSION_ERROR", "QUOTA_EXCEEDED"])
+async def test_permission_and_quota_alerts_are_delivered(ctx, kind):
+    _, repo, account, _ = ctx
+    job = (await enqueue(repo, account))[0]
+    subject = SimpleNamespace(account_id=account.id, telegram_user_id=42, region=job.region,
+                              job_id=job.id, subnet_cidr=job.cidr)
+    bot = SimpleNamespace(send_message=AsyncMock())
+    assert await NotificationService(bot, repo).send(subject, None, None, 0, f"{kind}: HTTP 403", durable=True)
+    bot.send_message.assert_awaited_once()
+    assert job.cidr in bot.send_message.call_args.args[1]
+
+
+@pytest.mark.asyncio
+async def test_automatic_reports_are_disabled():
+    bot = SimpleNamespace(send_message=AsyncMock())
+    assert not await NotificationService(bot, None).send_report(42)
+    bot.send_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio
