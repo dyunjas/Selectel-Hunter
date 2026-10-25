@@ -42,6 +42,8 @@ class UiScreens:
         rows = [[("🏙 Москва", "jobs:scope:ru-2:0"), ("🌉 Петербург", "jobs:scope:spb:0"), ("Все", "jobs:scope:all:0")]]
         for job in visible:
             label = JOB_LABELS.get(job.status, "Состояние неизвестно")
+            if job.status in {"pending", "running"} and job.resource_json:
+                label = "🔎 Проверяем предыдущий запрос"
             if job.status in {"running", "pending"} and job.account_id in accounts and accounts[job.account_id].scheduler_status in {"PAUSED", "STOPPED"}:
                 label = "⏸ Аккаунт приостановлен"
             lines.append(f"<b>#{safe(job.id[:8])}</b> · {safe(region_name(job.region))}\n<code>{safe(job.cidr)}</code> · {label}\n")

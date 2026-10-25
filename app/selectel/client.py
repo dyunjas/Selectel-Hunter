@@ -150,7 +150,7 @@ class SelectelClient:
                                 retry_seconds = max(0.0, float(retry))
                             except ValueError:
                                 retry_seconds = max(0.0, parsedate_to_datetime(retry).timestamp() - time.time())
-                        # Resource POSTs are reconciled by the durable queue, never retried blindly.
+                        # Resource POSTs retry in the next scheduled cycle, not inside this call.
                         if method.upper() in {"GET", "HEAD", "DELETE"} and (response.status == 429 or response.status >= 500) and network_attempt + 1 < self.NETWORK_RETRIES:
                             network_attempt += 1
                             # The ordinary API_REQUEST_INTERVAL applies on every retry.

@@ -114,6 +114,7 @@ class BurstSchedulerManager:
                 entries.append((account.id, values))
             if entries:
                 await self.repo.apply_schedule(entries)
+            log.info("selectel_schedule active_accounts=%s period_seconds=%s stagger_seconds=%s", total, period, spacing)
         self._wake()
         return [(account_id, index * (spacing or self.stagger_seconds)) for index, (account_id, _) in enumerate(entries)]
 
@@ -159,6 +160,10 @@ class BurstSchedulerManager:
         settings = await self.repo.scheduler_settings()
         active = [account for account in accounts if self._active(account)]
         active.sort(key=lambda account: (account.scheduler_position, account.id))
+        if getattr(self.repo, "queue", None) is not None:
+            resumed = await self.repo.queue.retry_failed_requests([account.id for account in active])
+            if resumed:
+                log.info("selectel_requests_resumed count=%s reason=old_automatic_http_failure", resumed)
         for position, account in enumerate(active):
             values = {"scheduler_position": position}
             if account.scheduler_status == "IDLE":

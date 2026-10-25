@@ -159,7 +159,7 @@ async def test_success_is_atomic_and_telegram_failure_retries(context):
 
 
 @pytest.mark.asyncio
-async def test_lost_post_response_reconciles_without_second_allocation(context):
+async def test_lost_post_response_allows_next_scheduled_allocation(context):
     _, repo, account, _ = context
     job = await claim(repo, account)
     client = fake_client()
@@ -167,17 +167,20 @@ async def test_lost_post_response_reconciles_without_second_allocation(context):
     burst = DurableBurst(repo, AsyncMock())
     await burst.attempt(job, account, client)
     saved = await repo.queue.get(job.id)
-    assert saved.operation_id and saved.attempts == 1
+    assert saved.operation_id is None and saved.attempts == 1
     await repo.queue.control(job.id, 42, "pending")
     job = await repo.queue.claim(account.id)
-    client.get_floating_ips.return_value = {"floatingips": [resource(job)]}
+    async def create(*args, **kwargs):
+        return resource(job)
+    client.create_floating_ip.side_effect = create
     await burst.attempt(job, account, client)
-    client.create_floating_ip.assert_awaited_once()
+    assert client.create_floating_ip.await_count == 2
+    client.get_floating_ips.assert_not_awaited()
     assert (await repo.queue.get(job.id)).status == "completed"
 
 
 @pytest.mark.asyncio
-async def test_week_of_ambiguous_results_never_repeats_post(context, monkeypatch):
+async def test_ambiguous_errors_keep_allocating_at_every_scheduled_cycle(context, monkeypatch):
     import app.db.queue as module
     _, repo, account, _ = context
     simulated = datetime.utcnow()
@@ -192,12 +195,36 @@ async def test_week_of_ambiguous_results_never_repeats_post(context, monkeypatch
         job = await repo.queue.claim(account.id)
         assert job is not None
         await burst.attempt(job, account, client)
-    client.create_floating_ip.assert_awaited_once()
-    assert (await repo.queue.get(job.id)).operation_id
+    assert client.create_floating_ip.await_count == 9
+    assert (await repo.queue.get(job.id)).operation_id is None
+    client.get_floating_ips.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kind,status", [(ErrorType.RATE_LIMIT, 429), (ErrorType.PERMISSION_ERROR, 403), (ErrorType.NO_FREE_IP, 409)])
+@pytest.mark.parametrize("missing", [False, True])
+async def test_received_resource_survives_restart_without_another_allocation(context, missing):
+    _, repo, account, _ = context
+    job = await claim(repo, account)
+    await repo.queue.begin_operation(job, REGIONS["ru-2"]["floating_network_id"])
+    received = resource(job, ip="192.0.2.1" if missing else None)
+    await repo.queue.change(job, resource_json=json.dumps(received))
+    await repo.queue.release(job)
+    await repo.queue.control(job.id, 42, "pending")
+    recovered = await repo.queue.claim(account.id)
+    client = fake_client()
+    if missing:
+        client.get_floating_ip.side_effect = SelectelError(ErrorType.UNKNOWN, "gone", status=404)
+    await DurableBurst(repo, AsyncMock()).attempt(recovered, account, client)
+    saved = await repo.queue.get(job.id)
+    assert saved.operation_id is None
+    assert saved.status == ("pending" if missing else "completed")
+    client.create_floating_ip.assert_not_awaited()
+    client.get_floating_ips.assert_not_awaited()
+    client.delete_floating_ip.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind,status", [(ErrorType.RATE_LIMIT, 429), (ErrorType.PERMISSION_ERROR, 403), (ErrorType.AUTH_ERROR, 401), (ErrorType.QUOTA_EXCEEDED, 409), (ErrorType.UNKNOWN, 400), (ErrorType.UNKNOWN, 404), (ErrorType.NO_FREE_IP, 409)])
 async def test_definite_failure_preserves_queue_without_retry_after_extension(context, kind, status):
     _, repo, account, _ = context
     job = await claim(repo, account)
@@ -207,7 +234,7 @@ async def test_definite_failure_preserves_queue_without_retry_after_extension(co
     saved = await repo.queue.get(job.id)
     assert saved.operation_id is None and saved.attempts == 1 and saved.errors == 1
     assert saved.due_at <= datetime.utcnow() + timedelta(seconds=360)
-    assert saved.status == ("failed" if status == 403 else "pending")
+    assert saved.status == "pending"
     if status == 429:
         assert (await repo.get_account(account.id)).cooldown_until is None
 
@@ -352,18 +379,21 @@ async def test_durable_request_logs_context_and_result_without_secrets(context, 
 
 
 @pytest.mark.asyncio
-async def test_reconciliation_logging_does_not_allocate_again(context, caplog):
+async def test_old_unresolved_intent_allocates_without_reconciliation(context, caplog):
     import logging
     _, repo, account, _ = context
     job = await claim(repo, account)
     await repo.queue.begin_operation(job, "network")
     client = fake_client()
+    client.create_floating_ip.side_effect = SelectelError(ErrorType.NO_FREE_IP, "empty", status=409)
     with caplog.at_level(logging.INFO, logger="app.hunter.durable"):
         await DurableBurst(repo, AsyncMock()).attempt(job, account, client)
-    assert "action=reconcile" in caplog.text and "result=UNRESOLVED" in caplog.text
+    assert "action=allocate" in caplog.text and "result=NO_FREE_IP" in caplog.text
+    assert "UNRESOLVED" not in caplog.text
+    client.get_floating_ips.assert_not_awaited()
     assert "retry_seconds=" in caplog.text
     assert (await repo.queue.get(job.id)).due_at <= datetime.utcnow() + timedelta(seconds=360)
-    client.create_floating_ip.assert_not_awaited()
+    client.create_floating_ip.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -410,13 +440,13 @@ async def test_all_errors_keep_fixed_burst_slot_despite_history_and_retry_after(
     saved = await repo.queue.get(job.id)
     assert saved.due_at == planned + timedelta(seconds=120)
     assert saved.errors == 10001 and saved.status == "pending"
-    # Ambiguous POSTs keep their intent; definite rejections allow a fresh POST.
-    assert bool(saved.operation_id) == (status is None or status >= 500)
+    assert saved.operation_id is None
+    client.get_floating_ips.assert_not_awaited()
     assert (await repo.get_account(account.id)).cooldown_until is None
 
 
 @pytest.mark.asyncio
-async def test_unresolved_allocation_keeps_normal_slot_and_never_reposts(context, monkeypatch):
+async def test_old_unresolved_allocation_retries_every_normal_slot(context, monkeypatch):
     import app.db.queue as queue_module
     _, repo, account, _ = context
     at = datetime(2026, 10, 25, 10, 0, 5)
@@ -427,12 +457,84 @@ async def test_unresolved_allocation_keeps_normal_slot_and_never_reposts(context
     job = await claim(repo, account)
     await repo.queue.begin_operation(job, "network")
     client = fake_client()
+    client.create_floating_ip.side_effect = SelectelError(ErrorType.SERVER_ERROR, "offline", status=503)
     for cycle in range(3):
         await DurableBurst(repo, AsyncMock()).attempt(job, account, client)
         saved = await repo.queue.get(job.id)
         assert saved.due_at == datetime(2026, 10, 25, 10, 2) + timedelta(seconds=120 * cycle)
-        assert saved.operation_id
+        assert saved.operation_id is None
         at = saved.due_at
         job = await repo.queue.claim(account.id)
         assert job is not None
-    client.create_floating_ip.assert_not_awaited()
+    assert client.create_floating_ip.await_count == 3
+    client.get_floating_ips.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_startup_restores_only_old_automatic_api_failures(context, monkeypatch):
+    from app.hunter.account_manager import BurstSchedulerManager
+    _, repo, account, _ = context
+    targets = [t for t in TARGET_SUBNETS if t["region"] == "ru-2"]
+    await repo.queue.enqueue(account, targets)
+    jobs = await repo.queue.list(account_id=account.id)
+    recoverable, paused, preserved = jobs
+    async with repo.sessions() as s:
+        await s.execute(text("UPDATE queue_jobs SET status='failed', last_error='UNKNOWN: HTTP 400', operation_id='intent' WHERE id=:id"), {"id": recoverable.id})
+        await s.execute(text("UPDATE queue_jobs SET status='failed', last_error='Deletion ownership check failed; resource preserved' WHERE id=:id"), {"id": preserved.id})
+        await s.commit()
+    await repo.queue.control(paused.id, 42, "paused")
+    stopped_account = await repo.add_account(telegram_user_id=43, display_name="stopped", domain="d", username="u",
+        encrypted_password="encrypted", project_id="project", region="ru-2", scheduler_status="STOPPED")
+    await repo.queue.enqueue(stopped_account, [target("ru-2")])
+    stopped_job = (await repo.queue.list(account_id=stopped_account.id))[0]
+    async with repo.sessions() as s:
+        await s.execute(text("UPDATE queue_jobs SET status='failed', last_error='PERMISSION_ERROR: HTTP 403' WHERE id=:id"), {"id": stopped_job.id})
+        await s.commit()
+    manager = BurstSchedulerManager(repo, AsyncMock(), AsyncMock())
+    monkeypatch.setattr(manager, "_ensure_scheduler", AsyncMock())
+    await manager.start()
+    restored = await repo.queue.get(recoverable.id)
+    assert restored.status == "pending" and restored.operation_id == "intent"
+    assert (await repo.queue.get(paused.id)).status == "paused"
+    assert (await repo.queue.get(preserved.id)).status == "failed"
+    assert (await repo.queue.get(stopped_job.id)).status == "failed"
+    state = await repo.ui.job_state(recoverable.id)
+    assert state.active_since and state.pause_reason is None
+
+
+@pytest.mark.asyncio
+async def test_twenty_accounts_keep_all_three_targets_after_api_failures(context, monkeypatch, caplog):
+    import logging
+    from app.hunter.account_manager import BurstSchedulerManager
+    import app.hunter.durable as durable_module
+    _, repo, account, _ = context
+    accounts = [account]
+    for i in range(19):
+        accounts.append(await repo.add_account(telegram_user_id=42, display_name=f"test-{i}", domain="d", username="u",
+            encrypted_password="encrypted", project_id="project", region="ru-2", scheduler_status="RUNNING"))
+    targets = [t for t in TARGET_SUBNETS if t["region"] == "ru-2"]
+    clients = {}
+    for account in accounts:
+        await repo.queue.enqueue(account, targets)
+        client = fake_client()
+        client.create_floating_ip.side_effect = [
+            SelectelError(ErrorType.UNKNOWN, "bad request", status=400),
+            SelectelError(ErrorType.PERMISSION_ERROR, "forbidden", status=403),
+            SelectelError(ErrorType.QUOTA_EXCEEDED, "quota exceeded", status=409),
+        ]
+        clients[account.id] = client
+    real_sleep = asyncio.sleep
+    async def sleep(seconds):
+        await real_sleep(0 if seconds == 0.3 else seconds)
+    monkeypatch.setattr(durable_module.asyncio, "sleep", sleep)
+    await repo.update_scheduler_settings(burst_cooldown=90, burst_request_delay=0.3)
+    manager = BurstSchedulerManager(repo, AsyncMock(side_effect=lambda account_id: clients[account_id]), AsyncMock())
+    with caplog.at_level(logging.INFO, logger="app.hunter.durable"):
+        await asyncio.gather(*(manager._execute_burst(account) for account in accounts))
+    assert sum(c.create_floating_ip.await_count for c in clients.values()) == 60
+    jobs = await repo.queue.list()
+    assert len(jobs) == 60 and all(j.status == "pending" and j.attempts == 1 and not j.operation_id for j in jobs)
+    for account in await repo.all_accounts():
+        assert account.scheduler_status == "RUNNING" and account.next_cycle_at
+        assert 0 < (account.next_cycle_at - account.last_cycle_started_at).total_seconds() <= 90
+    assert caplog.text.count("allocation_attempts=3 reconciliations=0 pending=3 unresolved=0 failed=0") == 20

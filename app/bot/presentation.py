@@ -11,7 +11,7 @@ PROBLEMS = {
     "NO_FREE_IP": "Свободных IP пока нет. Поиск продолжится автоматически.",
     "NETWORK_ERROR": "Временная проблема соединения с Selectel. Повторим позже.",
     "SERVER_ERROR": "Selectel временно недоступен. Повторим позже.",
-    "RATE_LIMIT": "Selectel ограничил частоту запросов. Ожидаем окончания паузы API.",
+    "RATE_LIMIT": "Selectel ограничил частоту запросов. Поиск продолжится по расписанию.",
     "AUTH_ERROR": "Не удалось войти в Selectel. Проверьте данные аккаунта.",
     "PERMISSION_ERROR": "Недостаточно прав Selectel. Проверьте роли пользователя.",
     "QUOTA_EXCEEDED": "Исчерпана квота IP. Проверьте лимиты проекта Selectel.",
@@ -107,6 +107,8 @@ def job_keyboard(job, account=None):
 def job_text(job, state, account, offset, position=None, at=None):
     at = at or utcnow()
     status = JOB_LABELS.get(job.status, "Состояние неизвестно")
+    if job.status in {"pending", "running"} and job.resource_json:
+        status = "🔎 Проверяем предыдущий запрос"
     if job.status in {"running", "pending"} and account.scheduler_status == "PAUSED":
         status = "⏸ Аккаунт на паузе"
     elif job.status in {"running", "pending"} and account.scheduler_status == "STOPPED":

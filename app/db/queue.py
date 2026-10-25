@@ -88,6 +88,28 @@ class DurableQueue:
             await s.commit()
             return result.rowcount
 
+    async def retry_failed_requests(self, account_ids):
+        """Resume old automatic HTTP failures without touching user controls or intents."""
+        if not account_ids:
+            return 0
+        from app.selectel.errors import ErrorType
+        prefixes = tuple(f"{kind.value}: HTTP " for kind in ErrorType)
+        async with self.sessions() as s:
+            await s.execute(text("BEGIN IMMEDIATE"))
+            jobs = list((await s.scalars(select(QueueJob).where(
+                QueueJob.account_id.in_(account_ids), QueueJob.status == "failed",
+            ))).all())
+            resumed = 0
+            for job in jobs:
+                if not (job.last_error or "").startswith(prefixes):
+                    continue
+                previous = job.status
+                job.status, job.due_at, job.updated_at = "pending", now(), now()
+                await transition(s, job, previous, now())
+                resumed += 1
+            await s.commit()
+            return resumed
+
     async def claim(self, account_id, excluded=(), lease_seconds=60):
         at = now()
         async with self.sessions() as s:

@@ -103,10 +103,8 @@ class AccountBurstWorker:
             await self._notify(account, subnet, f"NO_FREE_IP: {exc}")
             return "continue"
         if kind in (ErrorType.PERMISSION_ERROR.value, ErrorType.AUTH_ERROR.value):
-            await self._state(scheduler_status="BLOCKED", next_cycle_at=None, cooldown_until=None)
-            await self._recalculate(reset=True)
             await self._notify(account, subnet, f"{kind}: HTTP {exc.status or '—'}: {exc}")
-            return "stop"
+            return "continue"
         if kind == ErrorType.RATE_LIMIT.value:
             await self._notify(account, subnet, f"RATE_LIMIT: HTTP 429: {exc}")
             return "continue"

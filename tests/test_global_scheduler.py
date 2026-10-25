@@ -142,6 +142,26 @@ async def test_repeated_bursts_keep_start_cadence_without_finish_cooldown():
 
 
 @pytest.mark.asyncio
+async def test_twenty_accounts_repeat_round_robin_with_period_divided_by_count():
+    accounts = [make_account(index) for index in range(1, 21)]
+    repo = FakeRepo(accounts, cooldown=1)
+    events = []
+    # Replies overlap the next account's slot but finish before the own next cycle.
+    manager = build_manager(repo, events, {index: 0.12 for index in range(1, 21)})
+    try:
+        await manager.start_all_accounts(1)
+        await asyncio.wait_for(_wait_for_events(events, 60), timeout=5)
+        starts = [event for event in events if event[0] == "start"][:60]
+        assert [event[1] for event in starts] == list(range(1, 21)) * 3
+        for index, event in enumerate(starts):
+            assert abs(event[2] - starts[0][2] - index * 0.05) < 0.15
+        for index in range(40):
+            assert abs(starts[index + 20][2] - starts[index][2] - 1) < 0.15
+    finally:
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("action", ["run_now", "resume_account", "start_account", "start_all_accounts"])
 async def test_manual_actions_preserve_only_rate_limit_cooldown(action):
     account = make_account(1, status="RATE_LIMIT_COOLDOWN")
