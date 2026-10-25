@@ -2,7 +2,7 @@ import asyncio
 import logging
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -76,6 +76,26 @@ async def main():
     dispatcher.include_router(build_scheduler_ui(repo, manager, set(settings.admin_ids)))
     dispatcher.include_router(build_router(repo, manager, box, client_factory, set(settings.admin_ids), bot, settings.notification_chat_id))
     dispatcher.include_router(build_stale_router(set(settings.admin_ids)))
+    async def report_loop():
+        periods = {"hour": timedelta(hours=1), "day": timedelta(days=1)}
+        while True:
+            try:
+                await asyncio.sleep(60)
+                report_settings = await repo.notification_settings()
+                period = periods.get(report_settings.report_period)
+                if not period:
+                    continue
+                now = datetime.utcnow()
+                if report_settings.last_report_at and now - report_settings.last_report_at < period:
+                    continue
+                for user_id in await repo.notification_users():
+                    await notification_service.send_report(user_id)
+                await repo.update_notification_settings(last_report_at=now)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("notification report loop failed")
+
     async def watchdog():
         while True:
             try:
@@ -131,7 +151,8 @@ async def main():
     try:
         await manager.restore()
         await repo.queue.announce_restore()
-        background = [asyncio.create_task(watchdog(), name="queue-watchdog"),
+        background = [asyncio.create_task(report_loop(), name="notification-reports"),
+                      asyncio.create_task(watchdog(), name="queue-watchdog"),
                       asyncio.create_task(deliver_notifications(), name="notification-outbox"),
                       asyncio.create_task(live_cards.run(), name="live-job-cards")]
         stop = asyncio.Event()

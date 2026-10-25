@@ -14,8 +14,6 @@ log = logging.getLogger(__name__)
 class NotificationService:
     """Single entry point for account and scheduler notifications."""
 
-    ALLOWED_EVENTS = frozenset({"PERMISSION_ERROR", "QUOTA_EXCEEDED"})
-
     def __init__(self, bot: Bot, repo):
         self.bot = bot
         self.repo = repo
@@ -54,8 +52,8 @@ class NotificationService:
 
     async def send(self, task, ip, fip_id, elapsed, event, durable=False):
         kind = self._kind(event)
-        if kind not in self.ALLOWED_EVENTS:
-            # Consume old outbox entries too, so disabled notices are not retried.
+        if kind == "RECOVERED":
+            # Consume queued recovery notices without sending or retrying them.
             return durable
         account = await self.repo.get_account(task.account_id)
         if not account or not account.notifications_enabled:
@@ -149,5 +147,27 @@ class NotificationService:
         return False
 
     async def send_report(self, user_id):
-        # Only permission and quota alerts are enabled; statistics remain in the UI.
+        settings = await self.repo.notification_settings()
+        if not settings.enabled or settings.report_period == "off":
+            return False
+        accounts = await self.repo.accounts(user_id)
+        if not accounts:
+            return False
+        lines = ["📊 <b>Сводный отчёт Selectel Hunter</b>", ""]
+        total = found = errors = 0
+        for account in accounts:
+            values = await self.repo.account_statistics(account.id)
+            by_result = values["by_result"]
+            account_found = by_result.get("FOUND", {}).get("count", 0)
+            account_errors = sum(item["count"] for key, item in by_result.items() if key not in {"FOUND", "NO_FREE_IP"})
+            total += values["total"]; found += account_found; errors += account_errors
+            lines.append(f"👤 <b>{safe(account.display_name)}</b> · {safe(account.scheduler_status)} · запросов: {values['total']} · IP: {account_found}")
+        lines += ["", f"Всего запросов: <b>{total}</b>", f"Найдено IP: <b>{found}</b>", f"Ошибок: <b>{errors}</b>"]
+        try:
+            await self.bot.send_message(user_id, "\n".join(lines))
+            return True
+        except TelegramRetryAfter as exc:
+            log.warning("report delivery throttled user=%s retry_after=%s", user_id, exc.retry_after)
+        except Exception:
+            log.exception("report delivery failed user=%s", user_id)
         return False

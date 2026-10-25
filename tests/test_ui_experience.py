@@ -218,7 +218,7 @@ async def test_outage_episode_is_deduplicated_persistently_and_recovers(ctx):
 
 
 @pytest.mark.asyncio
-async def test_found_is_saved_but_notification_is_consumed_without_sending(ctx):
+async def test_found_notification_has_correct_links_and_retries_without_loss(ctx):
     db, repo, account, _ = ctx
     await enqueue(repo, account)
     job = await complete(repo, account)
@@ -226,9 +226,15 @@ async def test_found_is_saved_but_notification_is_consumed_without_sending(ctx):
     task = await repo.get_task(item.hunter_task_id)
     bot = SimpleNamespace(send_message=AsyncMock(side_effect=ConnectionError('offline')))
     service = NotificationService(bot, repo)
+    with pytest.raises(ConnectionError):
+        await service.send(task, item.floating_ip_address, item.floating_ip_id, 0, 'FOUND', durable=True)
+    bot.send_message.side_effect = None
     assert await service.send(task, item.floating_ip_address, item.floating_ip_id, 0, 'FOUND', durable=True)
-    bot.send_message.assert_not_awaited()
-    assert (await repo.ui.history(42))[0][0].floating_ip_address == item.floating_ip_address
+    args, kwargs = bot.send_message.call_args
+    assert 'Москва (ru-2)' in args[1] and item.floating_ip_address in args[1]
+    assert 'Selectel. Результат сохранён в БД' in args[1]
+    assert f'job:view:{job.id}' in callbacks(kwargs['reply_markup'])
+    assert f'ip:view:{item.id}' in callbacks(kwargs['reply_markup'])
     event = next(i for i in await repo.queue.pending_notifications() if i.event_type == 'FOUND')
     await repo.queue.notification_result(event, True)
     restarted = Repository(db.sessions)
@@ -348,7 +354,7 @@ async def test_no_found_claim_before_committed_result(ctx):
     bot = SimpleNamespace(send_message=AsyncMock())
     task = SimpleNamespace(id=1234, account_id=account.id, telegram_user_id=42,
         subnet_id=job.subnet_id, subnet_cidr=job.cidr, region=job.region, attempts=0)
-    assert await NotificationService(bot, repo).send(task, '5.178.85.1', 'unconfirmed', 0, 'FOUND', durable=True)
+    assert not await NotificationService(bot, repo).send(task, '5.178.85.1', 'unconfirmed', 0, 'FOUND', durable=True)
     bot.send_message.assert_not_awaited()
 
 
@@ -382,15 +388,12 @@ async def test_failed_error_delivery_is_not_consumed_by_cooldown(ctx):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kind", ["RECOVERED", "NETWORK_ERROR", "SERVER_ERROR", "RATE_LIMIT", "NO_FREE_IP",
-                                  "AUTH_ERROR", "STARTED", "RESUMED", "PAUSED", "STOPPED", "RESTORED",
-                                  "SCHEDULER", "UNKNOWN", "FOUND"])
 @pytest.mark.parametrize("durable", [False, True])
-async def test_only_permission_and_quota_notifications_are_enabled(kind, durable):
+async def test_recovery_notices_are_disabled_including_old_outbox_entries(durable):
     bot = SimpleNamespace(send_message=AsyncMock())
     repo = SimpleNamespace(get_account=AsyncMock(side_effect=AssertionError("Suppressed event must not query the account")))
     service = NotificationService(bot, repo)
-    assert await service.send(None, None, None, 0, kind, durable=durable) is durable
+    assert await service.send(None, None, None, 0, "RECOVERED", durable=durable) is durable
     bot.send_message.assert_not_awaited()
 
 
@@ -408,10 +411,29 @@ async def test_permission_and_quota_alerts_are_delivered(ctx, kind):
 
 
 @pytest.mark.asyncio
-async def test_automatic_reports_are_disabled():
+async def test_automatic_reports_are_sent_with_saved_period(ctx):
+    _, repo, account, _ = ctx
+    await repo.update_notification_settings(report_period="hour")
     bot = SimpleNamespace(send_message=AsyncMock())
-    assert not await NotificationService(bot, None).send_report(42)
-    bot.send_message.assert_not_awaited()
+    assert await NotificationService(bot, repo).send_report(42)
+    bot.send_message.assert_awaited_once()
+    from html import escape
+    text = bot.send_message.call_args.args[1]
+    assert escape(account.display_name) in text
+    assert "\n" in text and "\\n" not in text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["NETWORK_ERROR", "SERVER_ERROR", "TIMEOUT", "RATE_LIMIT", "NO_FREE_IP", "AUTH_ERROR",
+                                  "STARTED", "RESUMED", "PAUSED", "STOPPED", "RESTORED", "SCHEDULER", "UNKNOWN"])
+async def test_other_notification_types_are_restored(ctx, kind):
+    _, repo, account, _ = ctx
+    await repo.update_account(account.id, notify_scheduler=True)
+    subject = SimpleNamespace(account_id=account.id, telegram_user_id=42, region="ru-2", subnet_cidr="5.178.85.0/24")
+    bot = SimpleNamespace(send_message=AsyncMock())
+    assert await NotificationService(bot, repo).send(subject, None, None, 0, kind, durable=True)
+    bot.send_message.assert_awaited_once()
+
 
 
 @pytest.mark.asyncio
